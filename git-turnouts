@@ -77,9 +77,363 @@ get_project_name() {
 }
 
 # Get base worktree directory
+# Returns the base directory where worktrees should be created
+# The project name will be automatically added as a subdirectory
 get_base_worktree_dir() {
+  local project_name=$(get_project_name)
+
+  # 1. Check for project-specific configuration
+  local project_base=$(get_config "worktree.projects.${project_name}.base_dir" "")
+  if [ -n "$project_base" ]; then
+    echo "$project_base"
+    return
+  fi
+
+  # 2. Check for global configuration
+  local global_base=$(get_config "worktree.global.base_dir" "")
+  if [ -n "$global_base" ]; then
+    echo "$global_base"
+    return
+  fi
+
+  # 3. Fallback to automatic detection (current behavior)
   local main_worktree=$(get_main_worktree)
   echo "$(dirname "$main_worktree")/worktree"
+}
+
+# ============================================================================
+# CONFIGURATION SYSTEM
+# ============================================================================
+
+# Configuration variables (bash 3.2 compatible - no associative arrays)
+CONFIG_WORKTREE_GLOBAL_BASE_DIR=""       # Global base directory (project name added automatically)
+CONFIG_WORKTREE_PROJECTS=""              # Space-separated list: "project1:path1 project2:path2"
+CONFIG_DEFAULTS_OPEN_WITH="idea"
+CONFIG_REMOVE_AUTO_PRUNE="true"
+CONFIG_COPY_FILES=""                     # Space-separated list
+CONFIG_PROTECTED_BRANCHES="main master"  # Space-separated list
+
+# Parse simple YAML configuration (bash 3.2 compatible)
+# Supports: nested keys up to 3 levels and lists
+parse_yaml_config() {
+  local config_file="$1"
+  local section=""      # Level 1: worktree, defaults, etc.
+  local subsection=""   # Level 2: global, projects, copy_files, etc.
+  local list_key=""
+  local in_list=false
+  local in_project_item=false
+  local current_project_name=""
+  local current_project_base=""
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Level 1: Section headers (e.g., "worktree:")
+    if [[ "$line" =~ ^([a-z_]+):([[:space:]]*|[[:space:]]+.*)$ ]]; then
+      section="${BASH_REMATCH[1]}"
+      subsection=""
+      in_list=false
+      in_project_item=false
+      continue
+    fi
+
+    # Level 2: Subsection headers (e.g., "  global:" or "  projects:")
+    if [[ "$line" =~ ^[[:space:]]{2}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      if [ -z "$value" ]; then
+        # Save current project before transitioning to new subsection
+        if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
+          CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
+        fi
+
+        # It's a subsection header
+        subsection="$key"
+        in_list=false
+        in_project_item=false
+      else
+        # It's a key-value pair at level 2
+        # Expand tilde in paths
+        if [[ "$value" == ~* ]]; then
+          value="${value/#\~/$HOME}"
+        fi
+
+        # Handle level 2 keys
+        case "${section}.${key}" in
+          "defaults.open_with")
+            CONFIG_DEFAULTS_OPEN_WITH="$value"
+            ;;
+          "remove.auto_prune")
+            CONFIG_REMOVE_AUTO_PRUNE="$value"
+            ;;
+        esac
+        in_list=false
+        in_project_item=false
+      fi
+      continue
+    fi
+
+    # Level 3: Handle "- " for list items under projects
+    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
+      # Save previous project if we were parsing one
+      if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
+        CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
+      fi
+
+      # Start new project item
+      if [ "$section" = "worktree" ] && [ "$subsection" = "projects" ]; then
+        in_project_item=true
+        current_project_name=""
+        current_project_base=""
+
+        # Check if name: is on the same line as dash
+        local rest="${BASH_REMATCH[1]}"
+        if [[ "$rest" =~ ^name:[[:space:]]*(.+)$ ]]; then
+          current_project_name="${BASH_REMATCH[1]}"
+        fi
+      else
+        # Regular list item (for copy_files, protected_branches, etc.)
+        local item="${BASH_REMATCH[1]}"
+        if [ "$subsection" = "copy_files" ]; then
+          CONFIG_COPY_FILES="$CONFIG_COPY_FILES $item"
+        elif [ "$section" = "protection" ] && [ "$subsection" = "protected_branches" ]; then
+          CONFIG_PROTECTED_BRANCHES="$CONFIG_PROTECTED_BRANCHES $item"
+        fi
+        in_project_item=false
+      fi
+      continue
+    fi
+
+    # Level 3: Nested keys under subsections (e.g., "    base_dir: value")
+    if [[ "$line" =~ ^[[:space:]]{4}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Expand tilde in paths
+      if [[ "$value" == ~* ]]; then
+        value="${value/#\~/$HOME}"
+      fi
+
+      # Handle keys under global
+      if [ "$section" = "worktree" ] && [ "$subsection" = "global" ] && [ "$key" = "base_dir" ]; then
+        CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
+      fi
+
+      # Handle keys under protection
+      if [ "$section" = "protection" ] && [ "$key" = "protected_branches" ] && [ -z "$value" ]; then
+        in_list=true
+        subsection="protected_branches"
+      fi
+
+      # Handle keys under worktree for copy_files
+      if [ "$section" = "worktree" ] && [ "$key" = "copy_files" ] && [ -z "$value" ]; then
+        in_list=true
+        subsection="copy_files"
+      fi
+
+      in_project_item=false
+      continue
+    fi
+
+    # Level 4: Properties within project list items (e.g., "      name: value" or "      base_dir: value")
+    if [[ "$line" =~ ^[[:space:]]{6}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Expand tilde in paths
+      if [[ "$value" == ~* ]]; then
+        value="${value/#\~/$HOME}"
+      fi
+
+      # Handle project properties
+      if [ "$in_project_item" = true ]; then
+        if [ "$key" = "name" ]; then
+          current_project_name="$value"
+        elif [ "$key" = "base_dir" ]; then
+          current_project_base="$value"
+        fi
+      fi
+      continue
+    fi
+  done < "$config_file"
+
+  # Save last project if we were parsing one
+  if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
+    CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
+  fi
+
+  # Trim leading spaces from lists
+  CONFIG_COPY_FILES="${CONFIG_COPY_FILES## }"
+  CONFIG_PROTECTED_BRANCHES="${CONFIG_PROTECTED_BRANCHES## }"
+  CONFIG_WORKTREE_PROJECTS="${CONFIG_WORKTREE_PROJECTS## }"
+}
+
+# Validate configuration values (bash 3.2 compatible)
+validate_configuration() {
+  # Validate defaults.open_with
+  if [ -n "$CONFIG_DEFAULTS_OPEN_WITH" ]; then
+    case "$CONFIG_DEFAULTS_OPEN_WITH" in
+      idea|code|iterm|warp|finder)
+        ;;  # Valid
+      *)
+        echo "⚠️  Warning: Invalid defaults.open_with value '$CONFIG_DEFAULTS_OPEN_WITH' in config"
+        echo "   Valid options: idea, code, iterm, warp, finder"
+        echo "   Falling back to default: idea"
+        CONFIG_DEFAULTS_OPEN_WITH="idea"
+        ;;
+    esac
+  fi
+
+  # Validate worktree.base_dir exists or can be created
+  if [ -n "$CONFIG_WORKTREE_BASE_DIR" ]; then
+    # Check if directory exists or parent exists
+    if [ ! -d "$CONFIG_WORKTREE_BASE_DIR" ]; then
+      local parent_dir=$(dirname "$CONFIG_WORKTREE_BASE_DIR")
+      if [ ! -d "$parent_dir" ]; then
+        echo "⚠️  Warning: Configured worktree.base_dir parent does not exist: $parent_dir"
+        echo "   Falling back to automatic detection"
+        CONFIG_WORKTREE_BASE_DIR=""
+      fi
+    fi
+  fi
+
+  # Validate and normalize remove.auto_prune to true/false
+  case "$CONFIG_REMOVE_AUTO_PRUNE" in
+    true|false)
+      ;;  # Already normalized
+    yes|1)
+      CONFIG_REMOVE_AUTO_PRUNE="true"
+      ;;
+    no|0)
+      CONFIG_REMOVE_AUTO_PRUNE="false"
+      ;;
+    *)
+      echo "⚠️  Warning: Invalid remove.auto_prune value '$CONFIG_REMOVE_AUTO_PRUNE' in config"
+      echo "   Valid options: true, false, yes, no, 1, 0"
+      echo "   Falling back to default: true"
+      CONFIG_REMOVE_AUTO_PRUNE="true"
+      ;;
+  esac
+}
+
+# Load configuration from file (bash 3.2 compatible)
+load_configuration() {
+  # Get the directory where git-turnouts is installed
+  local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local config_file="$script_dir/.config.yml"
+
+  # Defaults are already set in variable declarations above
+  # Only load and parse if config file exists
+  if [ -f "$config_file" ]; then
+    if [ -r "$config_file" ]; then
+      parse_yaml_config "$config_file" 2>/dev/null || {
+        echo "⚠️  Warning: Error parsing config file: $config_file"
+        echo "   Continuing with defaults..."
+      }
+      # Validate configuration after loading
+      validate_configuration
+    else
+      echo "⚠️  Warning: Cannot read config file: $config_file"
+      echo "   Continuing with defaults..."
+    fi
+  fi
+}
+
+# Get configuration value with fallback (bash 3.2 compatible)
+get_config() {
+  local key="$1"
+  local default="${2:-}"
+
+  case "$key" in
+    worktree.global.base_dir)
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
+        echo "$CONFIG_WORKTREE_GLOBAL_BASE_DIR"
+      else
+        echo "$default"
+      fi
+      ;;
+    worktree.projects.*.base_dir)
+      # Extract project name from key: worktree.projects.PROJECT_NAME.base_dir
+      local project=$(echo "$key" | sed 's/worktree\.projects\.\(.*\)\.base_dir/\1/')
+
+      # Search in CONFIG_WORKTREE_PROJECTS for matching project
+      for entry in $CONFIG_WORKTREE_PROJECTS; do
+        local proj_name="${entry%%:*}"
+        local proj_path="${entry#*:}"
+        if [ "$proj_name" = "$project" ]; then
+          echo "$proj_path"
+          return
+        fi
+      done
+      echo "$default"
+      ;;
+    defaults.open_with)
+      if [ -n "$CONFIG_DEFAULTS_OPEN_WITH" ]; then
+        echo "$CONFIG_DEFAULTS_OPEN_WITH"
+      else
+        echo "$default"
+      fi
+      ;;
+    remove.auto_prune)
+      if [ -n "$CONFIG_REMOVE_AUTO_PRUNE" ]; then
+        echo "$CONFIG_REMOVE_AUTO_PRUNE"
+      else
+        echo "$default"
+      fi
+      ;;
+    *)
+      echo "$default"
+      ;;
+  esac
+}
+
+# Copy configured files from main worktree to new worktree (bash 3.2 compatible)
+copy_configured_files() {
+  local source_dir="$1"    # Main worktree path
+  local target_dir="$2"    # New worktree path
+
+  # Check if there are files to copy
+  if [ -z "$CONFIG_COPY_FILES" ]; then
+    return 0
+  fi
+
+  echo "📄 Copying configured files..."
+  local copied=0
+  local skipped=0
+
+  # Iterate over space-separated list
+  for file in $CONFIG_COPY_FILES; do
+    local source_file="$source_dir/$file"
+    local target_file="$target_dir/$file"
+
+    if [ -f "$source_file" ]; then
+      # Create target directory if needed
+      local target_dir_parent=$(dirname "$target_file")
+      mkdir -p "$target_dir_parent"
+
+      # Copy file
+      if cp "$source_file" "$target_file" 2>/dev/null; then
+        echo "   ✓ Copied: $file"
+        copied=$((copied + 1))
+      else
+        echo "   ⚠ Failed to copy: $file"
+        skipped=$((skipped + 1))
+      fi
+    else
+      echo "   ⚠ Not found: $file (skipped)"
+      skipped=$((skipped + 1))
+    fi
+  done
+
+  if [ $copied -gt 0 ]; then
+    echo "   Copied $copied file(s)"
+  fi
+  if [ $skipped -gt 0 ]; then
+    echo "   Skipped $skipped file(s)"
+  fi
 }
 
 # ============================================================================
@@ -87,8 +441,8 @@ get_base_worktree_dir() {
 # ============================================================================
 
 cmd_add() {
-  # Default app to open
-  local OPEN_APP="idea"
+  # Load default from config
+  local OPEN_APP=$(get_config "defaults.open_with" "idea")
 
   # Function to show usage for add command
   show_add_usage() {
@@ -291,7 +645,7 @@ cmd_add() {
   # Get absolute path of base dir
   local BASE_WORKTREE_DIR_ABS=$(realpath "$BASE_WORKTREE_DIR")
 
-  # Create project-specific directory
+  # Create project-specific directory (always added for organization)
   local PROJECT_WORKTREE_DIR="$BASE_WORKTREE_DIR_ABS/$PROJECT_NAME"
   mkdir -p "$PROJECT_WORKTREE_DIR"
 
@@ -350,6 +704,9 @@ cmd_add() {
   fi
 
   echo "✅ Worktree created at: $TARGET_DIR (branch: $BRANCH)"
+
+  # Copy configured files
+  copy_configured_files "$MAIN_WORKTREE" "$TARGET_DIR"
 
   # Open in specified application
   case "$OPEN_APP" in
@@ -436,15 +793,19 @@ cmd_remove() {
 
     echo "Removing worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
 
-    # Check if this is the main branch to avoid deleting it
+    # Check if this is a protected branch to avoid deleting it
     local DEFAULT_BRANCH
     DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
+    # Check against configured protected branches (space-separated list)
     local SKIP_BRANCH_DELETE=false
-    if [ "$BRANCH_NAME" = "$DEFAULT_BRANCH" ] || [ "$BRANCH_NAME" = "main" ] || [ "$BRANCH_NAME" = "master" ]; then
-      echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
-      SKIP_BRANCH_DELETE=true
-    fi
+    for protected in $CONFIG_PROTECTED_BRANCHES $DEFAULT_BRANCH; do
+      if [ "$BRANCH_NAME" = "$protected" ]; then
+        echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
+        SKIP_BRANCH_DELETE=true
+        break
+      fi
+    done
 
     if git worktree remove --force "$WORKTREE_PATH"; then
       echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
@@ -497,9 +858,14 @@ cmd_remove() {
     echo
   done
 
-  # Prune once at the end
-  echo "Pruning stale worktree references..."
-  git worktree prune
+  # Prune once at the end (if configured)
+  local auto_prune=$(get_config "remove.auto_prune" "true")
+  if [ "$auto_prune" = "true" ]; then
+    echo "Pruning stale worktree references..."
+    git worktree prune
+  else
+    echo "ℹ️  Skipping prune (disabled in config)"
+  fi
 
   # Summary
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -568,6 +934,26 @@ COMMANDS:
     -v
         Show version information
 
+    config [show|init]
+        Manage configuration
+
+CONFIGURATION:
+    git-turnouts config show
+        Display current configuration
+
+    git-turnouts config init
+        Create .config.yml from .config.yml.example
+
+    Configuration file: .config.yml
+    Example template:   .config.yml.example
+
+    See .config.yml.example for all available options:
+    - worktree.base_dir: Custom worktree location
+    - worktree.copy_files: Files to copy to new worktrees
+    - defaults.open_with: Default IDE (idea, code, iterm, warp, finder)
+    - protection.protected_branches: Branches that cannot be deleted
+    - remove.auto_prune: Auto-run git worktree prune after removing
+
 EXAMPLES:
     # Create worktree from PR number
     git-turnouts add 7113
@@ -596,6 +982,136 @@ show_version() {
 }
 
 # ============================================================================
+# CONFIG COMMAND - Manage configuration
+# ============================================================================
+
+cmd_config() {
+  local subcommand="${1:-show}"
+
+  # Get the directory where git-turnouts is installed
+  local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local config_file="$script_dir/.config.yml"
+  local example_file="$script_dir/.config.yml.example"
+
+  case "$subcommand" in
+    show)
+      echo "📋 Git Turnouts Configuration"
+      echo ""
+      echo "Configuration file: $config_file"
+      [ -f "$config_file" ] && echo "                    (✓ exists)" || echo "                    (not found - using defaults)"
+      echo ""
+      echo "Example file: $example_file"
+      [ -f "$example_file" ] && echo "              (✓ available)" || echo "              (not found)"
+      echo ""
+      echo "Current effective configuration:"
+      echo ""
+
+      # Show worktree configuration
+      echo "  worktree:"
+      local current_project=$(get_project_name)
+      echo "    current project: $current_project"
+
+      # Show global base_dir
+      local global_base=$(get_config 'worktree.global.base_dir' '')
+      if [ -n "$global_base" ]; then
+        echo "    global.base_dir: $global_base"
+        echo "                     (project name added automatically)"
+      else
+        echo "    global.base_dir: (not configured)"
+      fi
+
+      # Show project-specific base_dir
+      local project_base=$(get_config "worktree.projects.${current_project}.base_dir" '')
+      if [ -n "$project_base" ]; then
+        echo "    projects.$current_project.base_dir: $project_base"
+        echo "                                         (OVERRIDES global)"
+      fi
+
+      # Show what will actually be used
+      local effective_base=$(get_base_worktree_dir)
+      echo "    → effective path: $effective_base/$current_project/[branch]"
+
+      # Show all configured projects
+      if [ -n "$CONFIG_WORKTREE_PROJECTS" ]; then
+        echo ""
+        echo "    configured projects:"
+        for entry in $CONFIG_WORKTREE_PROJECTS; do
+          local proj_name="${entry%%:*}"
+          local proj_path="${entry#*:}"
+          if [ "$proj_name" = "$current_project" ]; then
+            echo "      - $proj_name: $proj_path (ACTIVE)"
+          else
+            echo "      - $proj_name: $proj_path"
+          fi
+        done
+      fi
+
+      # Show copy_files
+      echo ""
+      if [ -n "$CONFIG_COPY_FILES" ]; then
+        echo "    copy_files:"
+        for file in $CONFIG_COPY_FILES; do
+          echo "      - $file"
+        done
+      else
+        echo "    copy_files: (none)"
+      fi
+
+      # Show defaults
+      echo ""
+      echo "  defaults:"
+      echo "    open_with: $(get_config 'defaults.open_with' 'idea')"
+
+      # Show protection
+      echo ""
+      echo "  protection:"
+      if [ -n "$CONFIG_PROTECTED_BRANCHES" ]; then
+        echo "    protected_branches:"
+        for branch in $CONFIG_PROTECTED_BRANCHES; do
+          echo "      - $branch"
+        done
+      fi
+
+      # Show remove settings
+      echo ""
+      echo "  remove:"
+      echo "    auto_prune: $(get_config 'remove.auto_prune' 'true')"
+      ;;
+    init)
+      # Create config file from example
+      if [ ! -f "$example_file" ]; then
+        echo "❌ Error: Example file not found: $example_file"
+        echo "   Please ensure git-turnouts is properly installed"
+        exit 1
+      fi
+
+      if [ -f "$config_file" ]; then
+        echo "⚠️  Config file already exists: $config_file"
+        echo "   Remove it first or edit manually"
+        exit 1
+      fi
+
+      cp "$example_file" "$config_file"
+      echo "✅ Created configuration file: $config_file"
+      echo "   Edit this file to customize git-turnouts behavior"
+      echo ""
+      echo "   vim $config_file"
+      ;;
+    *)
+      echo "Usage: git-turnouts config [show|init]"
+      echo ""
+      echo "Commands:"
+      echo "  show    Show current configuration (default)"
+      echo "  init    Create .config.yml from .config.yml.example"
+      echo ""
+      echo "Examples:"
+      echo "  git-turnouts config show"
+      echo "  git-turnouts config init"
+      ;;
+  esac
+}
+
+# ============================================================================
 # MAIN DISPATCHER
 # ============================================================================
 
@@ -604,6 +1120,9 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
   echo "❌ Error: Not a git repository"
   exit 1
 fi
+
+# Load configuration
+load_configuration
 
 # Parse command
 COMMAND="${1:-help}"
@@ -618,6 +1137,9 @@ case "$COMMAND" in
     ;;
   list|ls)
     cmd_list "$@"
+    ;;
+  config)
+    cmd_config "$@"
     ;;
   help|--help|-h)
     show_help

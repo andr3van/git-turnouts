@@ -1,0 +1,140 @@
+# Git Turnouts Configuration
+# ==========================
+# This file manages configuration for ALL your projects from one central location.
+# It lives in the git-turnouts installation directory.
+#
+# Quick start:
+#   git-turnouts config init    # Creates .config.yml from this template
+#   git-turnouts config show    # View current configuration and detected project
+#
+# Project names are automatically detected from your repository directory names.
+# Example: /Users/you/projects/my-app → project name is "my-app"
+
+# Worktree Configuration
+# ----------------------
+worktree:
+  # Global base directory for all projects
+  # The project name will automatically be added as a subdirectory
+  # This applies to all projects unless overridden by project-specific config
+  #
+  # Example:
+  #   global:
+  #     base_dir: ~/worktrees
+  #   Result: ~/worktrees/my-project/branch-name
+  #
+  # Leave empty or comment out for auto-detection (default: ../worktree)
+  global:
+    base_dir: ~/worktrees
+
+  # Project-specific base directories
+  # These override the global setting for specific projects
+  # The 'name' must match your repository's directory name exactly
+  #
+  # Example: If your repo is at ~/code/my-app, use name: my-app
+  #
+  # Uncomment and customize for your projects:
+  # projects:
+  #   - name: my-app
+  #     base_dir: ~/custom/my-app
+  #   - name: another-project
+  #     base_dir: /tmp/another-project
+  #   - name: git-turnouts
+  #     base_dir: ~/dev/git-turnouts-worktrees
+  #   - name: my-important-project
+  #     base_dir: ~/projects/important/worktrees
+
+  # Files to copy from main worktree to new worktrees
+  # Useful for environment files, editor configs, etc.
+  #
+  # Examples:
+  copy_files:
+    - .editorconfig
+    - .env.example
+    - .nvmrc
+    - .ruby-version
+    # - .prettierrc
+    # - .eslintrc.js
+    # - .idea/codeStyles/
+    # - config/database.yml.example
+
+# Default Behavior
+# ----------------
+defaults:
+  # Default IDE/application to open when creating worktrees
+  # Options: idea, code, iterm, warp, finder
+  #
+  # You can still override this per-command with --open flag:
+  #   git-turnouts add feature-x --open code
+  #
+  # Default: idea (IntelliJ IDEA)
+  open_with: idea
+
+# Branch Protection
+# -----------------
+protection:
+  # Branches that cannot be deleted when removing worktrees
+  # The worktree will be removed, but the branch will remain
+  #
+  # Note: main and master are protected by default (even if not listed)
+  #       Your repository's default branch is also always protected
+  # Add any additional branches you want to protect here
+  #
+  # Examples:
+  protected_branches:
+    - develop
+    # - staging
+    # - production
+    # - release
+
+# Removal Behavior
+# ----------------
+remove:
+  # Automatically run 'git worktree prune' after removing worktrees
+  # This cleans up stale worktree references
+  #
+  # Options: true, false, yes, no, 1, 0
+  # Default: true
+  auto_prune: true
+
+# Configuration Examples
+# ----------------------
+#
+# Example 1: Minimal configuration (VS Code user)
+# -----------------------------------------------
+# defaults:
+#   open_with: code
+#
+# Example 2: Custom worktree location with file copying
+# -----------------------------------------------------
+# worktree:
+#   base_dir: ~/dev/worktrees
+#   copy_files:
+#     - .env.example
+#     - .editorconfig
+#
+# Example 3: Production environment protection
+# --------------------------------------------
+# protection:
+#   protected_branches:
+#     - main
+#     - master
+#     - develop
+#     - staging
+#     - production
+#
+# Example 4: All options configured
+# ----------------------------------
+# worktree:
+#   base_dir: ~/worktrees
+#   copy_files:
+#     - .env.example
+#     - .nvmrc
+# defaults:
+#   open_with: code
+# protection:
+#   protected_branches:
+#     - main
+#     - master
+#     - develop
+# remove:
+#   auto_prune: true
