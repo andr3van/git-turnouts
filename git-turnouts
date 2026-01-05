@@ -1473,6 +1473,59 @@ cmd_config() {
 }
 
 # ============================================================================
+# DEPENDENCY CHECKS
+# ============================================================================
+
+check_dependencies() {
+  local missing=""
+  local has_error=false
+
+  # Check for required commands
+  if ! command -v git >/dev/null 2>&1; then
+    missing="${missing}git "
+    has_error=true
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    missing="${missing}jq "
+    has_error=true
+  fi
+
+  # Check for optional but important commands
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "⚠️  Warning: GitHub CLI (gh) not found - PR integration will not work"
+    echo "   Install from: https://cli.github.com/"
+    echo ""
+  fi
+
+  # Check git version supports worktrees
+  if command -v git >/dev/null 2>&1; then
+    if ! git worktree list >/dev/null 2>&1; then
+      echo "❌ Error: Your git version doesn't support worktrees"
+      echo "   Please upgrade to git 2.5 or newer"
+      echo "   Current version: $(git --version)"
+      exit 1
+    fi
+  fi
+
+  # Report missing required dependencies
+  if [ "$has_error" = true ]; then
+    echo "❌ Error: Missing required dependencies: $missing"
+    echo ""
+    echo "Please install the missing tools:"
+    if [[ "$missing" == *"git"* ]]; then
+      echo "  • git: https://git-scm.com/downloads"
+    fi
+    if [[ "$missing" == *"jq"* ]]; then
+      echo "  • jq: https://jqlang.github.io/jq/download/"
+      echo "    - macOS: brew install jq"
+      echo "    - Linux: apt-get install jq or yum install jq"
+    fi
+    exit 1
+  fi
+}
+
+# ============================================================================
 # MAIN DISPATCHER
 # ============================================================================
 
@@ -1484,6 +1537,9 @@ fi
 
 # Load configuration
 load_configuration
+
+# Check dependencies
+check_dependencies
 
 # Parse command
 COMMAND="${1:-help}"
