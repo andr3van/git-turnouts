@@ -82,23 +82,16 @@ get_project_name() {
 get_base_worktree_dir() {
   local project_name=$(get_project_name)
 
-  # 1. Check for project-specific configuration
-  local project_base=$(get_config "worktree.projects.${project_name}.base_dir" "")
-  if [ -n "$project_base" ]; then
-    echo "$project_base"
-    return
-  fi
+  # Use hierarchical lookup: project-specific → global → auto-detect
+  local base_dir=$(get_config "worktree.base_dir" "" "$project_name")
 
-  # 2. Check for global configuration
-  local global_base=$(get_config "worktree.global.base_dir" "")
-  if [ -n "$global_base" ]; then
-    echo "$global_base"
-    return
+  if [ -n "$base_dir" ]; then
+    echo "$base_dir"
+  else
+    # Fallback to automatic detection (current behavior)
+    local main_worktree=$(get_main_worktree)
+    echo "$(dirname "$main_worktree")/worktree"
   fi
-
-  # 3. Fallback to automatic detection (current behavior)
-  local main_worktree=$(get_main_worktree)
-  echo "$(dirname "$main_worktree")/worktree"
 }
 
 # ============================================================================
@@ -106,32 +99,53 @@ get_base_worktree_dir() {
 # ============================================================================
 
 # Configuration variables (bash 3.2 compatible - no associative arrays)
+# All configuration sections now support both global and project-specific settings
+# Format: "project1:value1 project2:value2"
+
+# Worktree configuration
 CONFIG_WORKTREE_GLOBAL_BASE_DIR=""       # Global base directory (project name added automatically)
-CONFIG_WORKTREE_PROJECTS=""              # Space-separated list: "project1:path1 project2:path2"
-CONFIG_DEFAULTS_OPEN_WITH="idea"
-CONFIG_REMOVE_AUTO_PRUNE="true"
-CONFIG_COPY_FILES=""                     # Space-separated list
-CONFIG_PROTECTED_BRANCHES="main master"  # Space-separated list
+CONFIG_WORKTREE_PROJECTS=""              # Space-separated: "project1:path1 project2:path2"
+CONFIG_WORKTREE_GLOBAL_COPY_FILES=""     # Space-separated list of global copy files
+CONFIG_WORKTREE_PROJECTS_COPY_FILES=""   # Space-separated: "project1:file1,file2 project2:file3"
+
+# Defaults configuration
+CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"  # Hardcoded default
+CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:code project2:idea"
+
+# Protection configuration
+CONFIG_PROTECTION_GLOBAL_BRANCHES="main master"  # Hardcoded defaults (always protected)
+CONFIG_PROTECTION_PROJECTS=""            # Space-separated: "project1:dev,staging project2:prod"
+
+# Remove configuration
+CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="true"   # Hardcoded default
+CONFIG_REMOVE_PROJECTS=""                # Space-separated: "project1:false project2:true"
 
 # Parse simple YAML configuration (bash 3.2 compatible)
-# Supports: nested keys up to 3 levels and lists
+# Supports hierarchical structure: section.global.key and section.projects[].key
+# All sections support both global and project-specific settings
 parse_yaml_config() {
   local config_file="$1"
-  local section=""      # Level 1: worktree, defaults, etc.
-  local subsection=""   # Level 2: global, projects, copy_files, etc.
-  local list_key=""
-  local in_list=false
-  local in_project_item=false
+  local section=""              # Level 1: worktree, defaults, protection, remove
+  local subsection=""           # Level 2: global, projects
+  local in_project_item=false   # Are we inside a project list item?
+  local in_list=false           # Are we inside a list (copy_files, protected_branches)?
+  local list_type=""            # What type of list (copy_files, protected_branches)
+
+  # Temporary variables for building project entries
   local current_project_name=""
-  local current_project_base=""
+  local current_project_data=""     # For base_dir, open_with, auto_prune
+  local current_project_list=""     # For copy_files, protected_branches
 
   while IFS= read -r line || [ -n "$line" ]; do
     # Skip comments and empty lines
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line// /}" ]] && continue
 
-    # Level 1: Section headers (e.g., "worktree:")
+    # Level 1: Section headers (e.g., "worktree:", "defaults:")
     if [[ "$line" =~ ^([a-z_]+):([[:space:]]*|[[:space:]]+.*)$ ]]; then
+      # Save any pending project data before switching sections
+      save_project_data
+
       section="${BASH_REMATCH[1]}"
       subsection=""
       in_list=false
@@ -139,76 +153,33 @@ parse_yaml_config() {
       continue
     fi
 
-    # Level 2: Subsection headers (e.g., "  global:" or "  projects:")
+    # Level 2: Subsection headers (e.g., "  global:", "  projects:")
     if [[ "$line" =~ ^[[:space:]]{2}([a-z_]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
-      if [ -z "$value" ]; then
-        # Save current project before transitioning to new subsection
-        if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
-          CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
-        fi
+      # Save any pending project data before switching subsections
+      if [ "$key" != "$subsection" ]; then
+        save_project_data
+      fi
 
-        # It's a subsection header
-        subsection="$key"
-        in_list=false
-        in_project_item=false
-      else
-        # It's a key-value pair at level 2
+      subsection="$key"
+      in_list=false
+      in_project_item=false
+
+      # Handle direct key-value pairs at level 2 (if value is present)
+      if [ -n "$value" ]; then
         # Expand tilde in paths
         if [[ "$value" == ~* ]]; then
           value="${value/#\~/$HOME}"
         fi
-
-        # Handle level 2 keys
-        case "${section}.${key}" in
-          "defaults.open_with")
-            CONFIG_DEFAULTS_OPEN_WITH="$value"
-            ;;
-          "remove.auto_prune")
-            CONFIG_REMOVE_AUTO_PRUNE="$value"
-            ;;
-        esac
-        in_list=false
-        in_project_item=false
+        # These are legacy format, no longer used but kept for compatibility
       fi
       continue
     fi
 
-    # Level 3: Handle "- " for list items under projects
-    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
-      # Save previous project if we were parsing one
-      if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
-        CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
-      fi
-
-      # Start new project item
-      if [ "$section" = "worktree" ] && [ "$subsection" = "projects" ]; then
-        in_project_item=true
-        current_project_name=""
-        current_project_base=""
-
-        # Check if name: is on the same line as dash
-        local rest="${BASH_REMATCH[1]}"
-        if [[ "$rest" =~ ^name:[[:space:]]*(.+)$ ]]; then
-          current_project_name="${BASH_REMATCH[1]}"
-        fi
-      else
-        # Regular list item (for copy_files, protected_branches, etc.)
-        local item="${BASH_REMATCH[1]}"
-        if [ "$subsection" = "copy_files" ]; then
-          CONFIG_COPY_FILES="$CONFIG_COPY_FILES $item"
-        elif [ "$section" = "protection" ] && [ "$subsection" = "protected_branches" ]; then
-          CONFIG_PROTECTED_BRANCHES="$CONFIG_PROTECTED_BRANCHES $item"
-        fi
-        in_project_item=false
-      fi
-      continue
-    fi
-
-    # Level 3: Nested keys under subsections (e.g., "    base_dir: value")
-    if [[ "$line" =~ ^[[:space:]]{4}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+    # Level 3: Keys under global or list items under projects
+    if [[ "$line" =~ ^[[:space:]]{4}([a-z_-]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
@@ -217,28 +188,74 @@ parse_yaml_config() {
         value="${value/#\~/$HOME}"
       fi
 
-      # Handle keys under global
-      if [ "$section" = "worktree" ] && [ "$subsection" = "global" ] && [ "$key" = "base_dir" ]; then
-        CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
+      if [ "$subsection" = "global" ]; then
+        # Handle global settings
+        if [ -z "$value" ]; then
+          # It's a list header (e.g., "    copy_files:" or "    protected_branches:")
+          in_list=true
+          list_type="$key"
+        else
+          # It's a direct key-value pair
+          case "${section}.global.${key}" in
+            "worktree.global.base_dir")
+              CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
+              ;;
+            "defaults.global.open_with")
+              CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="$value"
+              ;;
+            "remove.global.auto_prune")
+              CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="$value"
+              ;;
+          esac
+        fi
       fi
-
-      # Handle keys under protection
-      if [ "$section" = "protection" ] && [ "$key" = "protected_branches" ] && [ -z "$value" ]; then
-        in_list=true
-        subsection="protected_branches"
-      fi
-
-      # Handle keys under worktree for copy_files
-      if [ "$section" = "worktree" ] && [ "$key" = "copy_files" ] && [ -z "$value" ]; then
-        in_list=true
-        subsection="copy_files"
-      fi
-
-      in_project_item=false
       continue
     fi
 
-    # Level 4: Properties within project list items (e.g., "      name: value" or "      base_dir: value")
+    # Level 3: List items under projects (e.g., "    - name: my-app")
+    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
+      local rest="${BASH_REMATCH[1]}"
+
+      if [ "$subsection" = "projects" ]; then
+        # Save previous project before starting a new one
+        save_project_data
+
+        # Start new project item
+        in_project_item=true
+        current_project_name=""
+        current_project_data=""
+        current_project_list=""
+        in_list=false
+
+        # Check if name: is on the same line as dash
+        if [[ "$rest" =~ ^name:[[:space:]]*(.+)$ ]]; then
+          current_project_name="${BASH_REMATCH[1]}"
+        fi
+      fi
+      # Note: Global list items are handled at level 4 (6 spaces)
+      continue
+    fi
+
+    # Level 4: List items under global lists OR properties within project items
+    # Check for list items first (e.g., "      - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
+      local item="${BASH_REMATCH[1]}"
+
+      if [ "$in_list" = true ] && [ "$subsection" = "global" ]; then
+        # List item under global (e.g., copy_files or protected_branches)
+        case "${section}.global.${list_type}" in
+          "worktree.global.copy_files")
+            CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
+            ;;
+          "protection.global.protected_branches")
+            CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
+            ;;
+        esac
+      fi
+      continue
+    fi
+
+    # Level 4: Properties within project items (e.g., "      name: value")
     if [[ "$line" =~ ^[[:space:]]{6}([a-z_]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
@@ -248,75 +265,177 @@ parse_yaml_config() {
         value="${value/#\~/$HOME}"
       fi
 
-      # Handle project properties
       if [ "$in_project_item" = true ]; then
         if [ "$key" = "name" ]; then
           current_project_name="$value"
-        elif [ "$key" = "base_dir" ]; then
-          current_project_base="$value"
+        elif [ -z "$value" ]; then
+          # It's a list header under project (e.g., "      copy_files:")
+          in_list=true
+          list_type="$key"
+        else
+          # It's a direct value under project
+          current_project_data="$value"
+        fi
+      fi
+      continue
+    fi
+
+    # Level 5: List items under project properties (e.g., "        - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{8}-[[:space:]]*(.*)$ ]]; then
+      local item="${BASH_REMATCH[1]}"
+
+      if [ "$in_project_item" = true ] && [ "$in_list" = true ]; then
+        # Add to project's list (comma-separated)
+        if [ -z "$current_project_list" ]; then
+          current_project_list="$item"
+        else
+          current_project_list="$current_project_list,$item"
         fi
       fi
       continue
     fi
   done < "$config_file"
 
-  # Save last project if we were parsing one
-  if [ "$in_project_item" = true ] && [ -n "$current_project_name" ] && [ -n "$current_project_base" ]; then
-    CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_base}"
-  fi
+  # Save any remaining project data
+  save_project_data
 
-  # Trim leading spaces from lists
-  CONFIG_COPY_FILES="${CONFIG_COPY_FILES## }"
-  CONFIG_PROTECTED_BRANCHES="${CONFIG_PROTECTED_BRANCHES## }"
+  # Trim leading spaces from global lists
+  CONFIG_WORKTREE_GLOBAL_COPY_FILES="${CONFIG_WORKTREE_GLOBAL_COPY_FILES## }"
+  CONFIG_PROTECTION_GLOBAL_BRANCHES="${CONFIG_PROTECTION_GLOBAL_BRANCHES## }"
   CONFIG_WORKTREE_PROJECTS="${CONFIG_WORKTREE_PROJECTS## }"
+  CONFIG_DEFAULTS_PROJECTS="${CONFIG_DEFAULTS_PROJECTS## }"
+  CONFIG_PROTECTION_PROJECTS="${CONFIG_PROTECTION_PROJECTS## }"
+  CONFIG_REMOVE_PROJECTS="${CONFIG_REMOVE_PROJECTS## }"
+  CONFIG_WORKTREE_PROJECTS_COPY_FILES="${CONFIG_WORKTREE_PROJECTS_COPY_FILES## }"
+}
+
+# Helper function to save accumulated project data
+save_project_data() {
+  if [ "$in_project_item" = true ] && [ -n "$current_project_name" ]; then
+    # Determine which configuration variable to update based on section
+    case "$section" in
+      worktree)
+        if [ -n "$current_project_data" ]; then
+          # Save base_dir
+          CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_data}"
+        fi
+        if [ -n "$current_project_list" ]; then
+          # Save copy_files list
+          CONFIG_WORKTREE_PROJECTS_COPY_FILES="$CONFIG_WORKTREE_PROJECTS_COPY_FILES ${current_project_name}:${current_project_list}"
+        fi
+        ;;
+      defaults)
+        if [ -n "$current_project_data" ]; then
+          CONFIG_DEFAULTS_PROJECTS="$CONFIG_DEFAULTS_PROJECTS ${current_project_name}:${current_project_data}"
+        fi
+        ;;
+      protection)
+        if [ -n "$current_project_list" ]; then
+          CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_project_list}"
+        fi
+        ;;
+      remove)
+        if [ -n "$current_project_data" ]; then
+          CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_project_data}"
+        fi
+        ;;
+    esac
+
+    # Reset for next project
+    current_project_name=""
+    current_project_data=""
+    current_project_list=""
+    in_list=false
+  fi
+  in_project_item=false
 }
 
 # Validate configuration values (bash 3.2 compatible)
 validate_configuration() {
-  # Validate defaults.open_with
-  if [ -n "$CONFIG_DEFAULTS_OPEN_WITH" ]; then
-    case "$CONFIG_DEFAULTS_OPEN_WITH" in
+  # Validate defaults.global.open_with
+  if [ -n "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" ]; then
+    case "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" in
       idea|code|iterm|warp|finder)
         ;;  # Valid
       *)
-        echo "⚠️  Warning: Invalid defaults.open_with value '$CONFIG_DEFAULTS_OPEN_WITH' in config"
+        echo "⚠️  Warning: Invalid defaults.global.open_with value '$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH' in config"
         echo "   Valid options: idea, code, iterm, warp, finder"
         echo "   Falling back to default: idea"
-        CONFIG_DEFAULTS_OPEN_WITH="idea"
+        CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"
         ;;
     esac
   fi
 
-  # Validate worktree.base_dir exists or can be created
-  if [ -n "$CONFIG_WORKTREE_BASE_DIR" ]; then
-    # Check if directory exists or parent exists
-    if [ ! -d "$CONFIG_WORKTREE_BASE_DIR" ]; then
-      local parent_dir=$(dirname "$CONFIG_WORKTREE_BASE_DIR")
+  # Validate project-specific open_with values
+  for entry in $CONFIG_DEFAULTS_PROJECTS; do
+    local proj_name="${entry%%:*}"
+    local open_with="${entry#*:}"
+    case "$open_with" in
+      idea|code|iterm|warp|finder)
+        ;;  # Valid
+      *)
+        echo "⚠️  Warning: Invalid open_with value '$open_with' for project '$proj_name'"
+        echo "   Valid options: idea, code, iterm, warp, finder"
+        echo "   This project will use global setting"
+        # Remove invalid entry
+        CONFIG_DEFAULTS_PROJECTS="${CONFIG_DEFAULTS_PROJECTS//${entry}/}"
+        ;;
+    esac
+  done
+
+  # Validate worktree.global.base_dir exists or can be created
+  if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
+    if [ ! -d "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
+      local parent_dir=$(dirname "$CONFIG_WORKTREE_GLOBAL_BASE_DIR")
       if [ ! -d "$parent_dir" ]; then
-        echo "⚠️  Warning: Configured worktree.base_dir parent does not exist: $parent_dir"
+        echo "⚠️  Warning: Configured worktree.global.base_dir parent does not exist: $parent_dir"
         echo "   Falling back to automatic detection"
-        CONFIG_WORKTREE_BASE_DIR=""
+        CONFIG_WORKTREE_GLOBAL_BASE_DIR=""
       fi
     fi
   fi
 
-  # Validate and normalize remove.auto_prune to true/false
-  case "$CONFIG_REMOVE_AUTO_PRUNE" in
+  # Validate and normalize remove.global.auto_prune to true/false
+  case "$CONFIG_REMOVE_GLOBAL_AUTO_PRUNE" in
     true|false)
       ;;  # Already normalized
     yes|1)
-      CONFIG_REMOVE_AUTO_PRUNE="true"
+      CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="true"
       ;;
     no|0)
-      CONFIG_REMOVE_AUTO_PRUNE="false"
+      CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="false"
       ;;
     *)
-      echo "⚠️  Warning: Invalid remove.auto_prune value '$CONFIG_REMOVE_AUTO_PRUNE' in config"
+      echo "⚠️  Warning: Invalid remove.global.auto_prune value '$CONFIG_REMOVE_GLOBAL_AUTO_PRUNE' in config"
       echo "   Valid options: true, false, yes, no, 1, 0"
       echo "   Falling back to default: true"
-      CONFIG_REMOVE_AUTO_PRUNE="true"
+      CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="true"
       ;;
   esac
+
+  # Validate and normalize project-specific auto_prune values
+  local validated_remove_projects=""
+  for entry in $CONFIG_REMOVE_PROJECTS; do
+    local proj_name="${entry%%:*}"
+    local auto_prune="${entry#*:}"
+    case "$auto_prune" in
+      true|false)
+        validated_remove_projects="$validated_remove_projects ${entry}"
+        ;;
+      yes|1)
+        validated_remove_projects="$validated_remove_projects ${proj_name}:true"
+        ;;
+      no|0)
+        validated_remove_projects="$validated_remove_projects ${proj_name}:false"
+        ;;
+      *)
+        echo "⚠️  Warning: Invalid auto_prune value '$auto_prune' for project '$proj_name'"
+        echo "   Valid options: true, false, yes, no, 1, 0"
+        echo "   This project will use global setting"
+        ;;
+    esac
+  done
+  CONFIG_REMOVE_PROJECTS="${validated_remove_projects## }"
 }
 
 # Load configuration from file (bash 3.2 compatible)
@@ -343,47 +462,154 @@ load_configuration() {
 }
 
 # Get configuration value with fallback (bash 3.2 compatible)
+# Supports hierarchical lookup: project-specific → global → hardcoded default
+# Usage: get_config "key" "hardcoded_default" ["project_name"]
 get_config() {
   local key="$1"
   local default="${2:-}"
+  local project="${3:-}"  # Optional: specific project, otherwise auto-detect
+
+  # Auto-detect project if not provided
+  if [ -z "$project" ]; then
+    project=$(get_project_name 2>/dev/null || echo "")
+  fi
 
   case "$key" in
-    worktree.global.base_dir)
+    # Worktree base_dir: project-specific → global → hardcoded default
+    worktree.base_dir)
+      # 1. Check project-specific setting
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_WORKTREE_PROJECTS; do
+          local proj_name="${entry%%:*}"
+          local proj_path="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            echo "$proj_path"
+            return
+          fi
+        done
+      fi
+
+      # 2. Check global setting
       if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
         echo "$CONFIG_WORKTREE_GLOBAL_BASE_DIR"
-      else
-        echo "$default"
+        return
       fi
-      ;;
-    worktree.projects.*.base_dir)
-      # Extract project name from key: worktree.projects.PROJECT_NAME.base_dir
-      local project=$(echo "$key" | sed 's/worktree\.projects\.\(.*\)\.base_dir/\1/')
 
-      # Search in CONFIG_WORKTREE_PROJECTS for matching project
-      for entry in $CONFIG_WORKTREE_PROJECTS; do
-        local proj_name="${entry%%:*}"
-        local proj_path="${entry#*:}"
-        if [ "$proj_name" = "$project" ]; then
-          echo "$proj_path"
-          return
-        fi
-      done
+      # 3. Use hardcoded default
       echo "$default"
       ;;
+
+    # Worktree copy_files: project-specific → global → hardcoded default
+    worktree.copy_files)
+      # 1. Check project-specific setting
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_WORKTREE_PROJECTS_COPY_FILES; do
+          local proj_name="${entry%%:*}"
+          local proj_files="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            # Convert comma-separated to space-separated
+            echo "${proj_files//,/ }"
+            return
+          fi
+        done
+      fi
+
+      # 2. Use global setting
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
+        echo "$CONFIG_WORKTREE_GLOBAL_COPY_FILES"
+        return
+      fi
+
+      # 3. Use hardcoded default (empty)
+      echo "$default"
+      ;;
+
+    # Defaults open_with: project-specific → global → hardcoded default
     defaults.open_with)
-      if [ -n "$CONFIG_DEFAULTS_OPEN_WITH" ]; then
-        echo "$CONFIG_DEFAULTS_OPEN_WITH"
-      else
-        echo "$default"
+      # 1. Check project-specific setting
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_DEFAULTS_PROJECTS; do
+          local proj_name="${entry%%:*}"
+          local proj_value="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            echo "$proj_value"
+            return
+          fi
+        done
       fi
+
+      # 2. Check global setting
+      if [ -n "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" ]; then
+        echo "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH"
+        return
+      fi
+
+      # 3. Use hardcoded default
+      echo "$default"
       ;;
+
+    # Protection protected_branches: project-specific → global → hardcoded default
+    protection.protected_branches)
+      # 1. Check project-specific setting
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_PROTECTION_PROJECTS; do
+          local proj_name="${entry%%:*}"
+          local proj_branches="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            # Convert comma-separated to space-separated, always include main/master
+            echo "main master ${proj_branches//,/ }"
+            return
+          fi
+        done
+      fi
+
+      # 2. Use global setting (always include main/master)
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
+        echo "$CONFIG_PROTECTION_GLOBAL_BRANCHES"
+        return
+      fi
+
+      # 3. Use hardcoded default (main master are always protected)
+      echo "$default"
+      ;;
+
+    # Remove auto_prune: project-specific → global → hardcoded default
     remove.auto_prune)
-      if [ -n "$CONFIG_REMOVE_AUTO_PRUNE" ]; then
-        echo "$CONFIG_REMOVE_AUTO_PRUNE"
-      else
-        echo "$default"
+      # 1. Check project-specific setting
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_REMOVE_PROJECTS; do
+          local proj_name="${entry%%:*}"
+          local proj_value="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            echo "$proj_value"
+            return
+          fi
+        done
       fi
+
+      # 2. Check global setting
+      if [ -n "$CONFIG_REMOVE_GLOBAL_AUTO_PRUNE" ]; then
+        echo "$CONFIG_REMOVE_GLOBAL_AUTO_PRUNE"
+        return
+      fi
+
+      # 3. Use hardcoded default
+      echo "$default"
       ;;
+
+    # Legacy support for old key formats
+    worktree.global.base_dir)
+      echo "${CONFIG_WORKTREE_GLOBAL_BASE_DIR:-$default}"
+      ;;
+
+    defaults.global.open_with)
+      echo "${CONFIG_DEFAULTS_GLOBAL_OPEN_WITH:-$default}"
+      ;;
+
+    remove.global.auto_prune)
+      echo "${CONFIG_REMOVE_GLOBAL_AUTO_PRUNE:-$default}"
+      ;;
+
     *)
       echo "$default"
       ;;
@@ -395,8 +621,11 @@ copy_configured_files() {
   local source_dir="$1"    # Main worktree path
   local target_dir="$2"    # New worktree path
 
+  # Get copy_files configuration (project-specific → global → empty)
+  local copy_files=$(get_config "worktree.copy_files" "")
+
   # Check if there are files to copy
-  if [ -z "$CONFIG_COPY_FILES" ]; then
+  if [ -z "$copy_files" ]; then
     return 0
   fi
 
@@ -405,7 +634,7 @@ copy_configured_files() {
   local skipped=0
 
   # Iterate over space-separated list
-  for file in $CONFIG_COPY_FILES; do
+  for file in $copy_files; do
     local source_file="$source_dir/$file"
     local target_file="$target_dir/$file"
 
@@ -797,9 +1026,12 @@ cmd_remove() {
     local DEFAULT_BRANCH
     DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
+    # Get protected branches (project-specific → global → default: main master)
+    local protected_branches=$(get_config "protection.protected_branches" "main master")
+
     # Check against configured protected branches (space-separated list)
     local SKIP_BRANCH_DELETE=false
-    for protected in $CONFIG_PROTECTED_BRANCHES $DEFAULT_BRANCH; do
+    for protected in $protected_branches $DEFAULT_BRANCH; do
       if [ "$BRANCH_NAME" = "$protected" ]; then
         echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
         SKIP_BRANCH_DELETE=true
@@ -1003,79 +1235,204 @@ cmd_config() {
       echo "Example file: $example_file"
       [ -f "$example_file" ] && echo "              (✓ available)" || echo "              (not found)"
       echo ""
-      echo "Current effective configuration:"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "Current Effective Configuration"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
       echo ""
 
-      # Show worktree configuration
-      echo "  worktree:"
       local current_project=$(get_project_name)
-      echo "    current project: $current_project"
+      echo "📦 Current Project: $current_project"
+      echo ""
 
-      # Show global base_dir
-      local global_base=$(get_config 'worktree.global.base_dir' '')
-      if [ -n "$global_base" ]; then
-        echo "    global.base_dir: $global_base"
-        echo "                     (project name added automatically)"
+      # ========== WORKTREE CONFIGURATION ==========
+      echo "🗂️  Worktree Configuration"
+      echo "────────────────────────────────────────────────"
+
+      # Base directory
+      echo "  Base Directory:"
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
+        echo "    Global:  $CONFIG_WORKTREE_GLOBAL_BASE_DIR"
       else
-        echo "    global.base_dir: (not configured)"
+        echo "    Global:  (not configured, using auto-detect)"
       fi
 
-      # Show project-specific base_dir
-      local project_base=$(get_config "worktree.projects.${current_project}.base_dir" '')
-      if [ -n "$project_base" ]; then
-        echo "    projects.$current_project.base_dir: $project_base"
-        echo "                                         (OVERRIDES global)"
+      # Check if current project has override
+      local has_project_base=false
+      for entry in $CONFIG_WORKTREE_PROJECTS; do
+        local proj_name="${entry%%:*}"
+        local proj_path="${entry#*:}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: $proj_path ⭐ ACTIVE OVERRIDE"
+          has_project_base=true
+          break
+        fi
+      done
+
+      if [ "$has_project_base" = false ] && [ -n "$CONFIG_WORKTREE_PROJECTS" ]; then
+        echo "    Project: (using global setting)"
       fi
 
-      # Show what will actually be used
       local effective_base=$(get_base_worktree_dir)
-      echo "    → effective path: $effective_base/$current_project/[branch]"
+      echo "    → Effective: $effective_base/$current_project/[branch]"
 
-      # Show all configured projects
-      if [ -n "$CONFIG_WORKTREE_PROJECTS" ]; then
+      # Copy files
+      echo ""
+      echo "  Files to Copy:"
+      local effective_copy_files=$(get_config "worktree.copy_files" "")
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
+        echo "    Global:"
+        for file in $CONFIG_WORKTREE_GLOBAL_COPY_FILES; do
+          echo "      - $file"
+        done
+      else
+        echo "    Global:  (none)"
+      fi
+
+      # Check if current project has override
+      local has_project_copy=false
+      for entry in $CONFIG_WORKTREE_PROJECTS_COPY_FILES; do
+        local proj_name="${entry%%:*}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: ⭐ ACTIVE OVERRIDE"
+          local proj_files="${entry#*:}"
+          for file in ${proj_files//,/ }; do
+            echo "      - $file"
+          done
+          has_project_copy=true
+          break
+        fi
+      done
+
+      if [ "$has_project_copy" = false ] && [ -n "$CONFIG_WORKTREE_PROJECTS_COPY_FILES" ]; then
+        echo "    Project: (using global setting)"
+      fi
+
+      if [ -n "$effective_copy_files" ]; then
+        echo "    → Effective: $effective_copy_files"
+      else
+        echo "    → Effective: (no files to copy)"
+      fi
+
+      # All configured projects
+      if [ -n "$CONFIG_WORKTREE_PROJECTS" ] || [ -n "$CONFIG_WORKTREE_PROJECTS_COPY_FILES" ]; then
         echo ""
-        echo "    configured projects:"
+        echo "  All Configured Projects:"
+        local all_projects=""
         for entry in $CONFIG_WORKTREE_PROJECTS; do
           local proj_name="${entry%%:*}"
-          local proj_path="${entry#*:}"
-          if [ "$proj_name" = "$current_project" ]; then
-            echo "      - $proj_name: $proj_path (ACTIVE)"
+          if [[ ! " $all_projects " =~ " $proj_name " ]]; then
+            all_projects="$all_projects $proj_name"
+          fi
+        done
+        for entry in $CONFIG_WORKTREE_PROJECTS_COPY_FILES; do
+          local proj_name="${entry%%:*}"
+          if [[ ! " $all_projects " =~ " $proj_name " ]]; then
+            all_projects="$all_projects $proj_name"
+          fi
+        done
+        for proj in $all_projects; do
+          if [ "$proj" = "$current_project" ]; then
+            echo "    - $proj ⭐ ACTIVE"
           else
-            echo "      - $proj_name: $proj_path"
+            echo "    - $proj"
           fi
         done
       fi
 
-      # Show copy_files
+      # ========== DEFAULTS CONFIGURATION ==========
       echo ""
-      if [ -n "$CONFIG_COPY_FILES" ]; then
-        echo "    copy_files:"
-        for file in $CONFIG_COPY_FILES; do
-          echo "      - $file"
-        done
-      else
-        echo "    copy_files: (none)"
+      echo "⚙️  Default Behavior"
+      echo "────────────────────────────────────────────────"
+      echo "  Open With (IDE):"
+      echo "    Global:  $CONFIG_DEFAULTS_GLOBAL_OPEN_WITH"
+
+      # Check if current project has override
+      local has_project_open=false
+      for entry in $CONFIG_DEFAULTS_PROJECTS; do
+        local proj_name="${entry%%:*}"
+        local proj_value="${entry#*:}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: $proj_value ⭐ ACTIVE OVERRIDE"
+          has_project_open=true
+          break
+        fi
+      done
+
+      if [ "$has_project_open" = false ] && [ -n "$CONFIG_DEFAULTS_PROJECTS" ]; then
+        echo "    Project: (using global setting)"
       fi
 
-      # Show defaults
-      echo ""
-      echo "  defaults:"
-      echo "    open_with: $(get_config 'defaults.open_with' 'idea')"
+      local effective_open=$(get_config "defaults.open_with" "idea")
+      echo "    → Effective: $effective_open"
 
-      # Show protection
+      # ========== PROTECTION CONFIGURATION ==========
       echo ""
-      echo "  protection:"
-      if [ -n "$CONFIG_PROTECTED_BRANCHES" ]; then
-        echo "    protected_branches:"
-        for branch in $CONFIG_PROTECTED_BRANCHES; do
+      echo "🛡️  Branch Protection"
+      echo "────────────────────────────────────────────────"
+      echo "  Protected Branches:"
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
+        echo "    Global:"
+        for branch in $CONFIG_PROTECTION_GLOBAL_BRANCHES; do
           echo "      - $branch"
         done
+      else
+        echo "    Global:  main, master (hardcoded defaults)"
       fi
 
-      # Show remove settings
+      # Check if current project has override
+      local has_project_protect=false
+      for entry in $CONFIG_PROTECTION_PROJECTS; do
+        local proj_name="${entry%%:*}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: ⭐ ACTIVE OVERRIDE"
+          local proj_branches="${entry#*:}"
+          for branch in ${proj_branches//,/ }; do
+            echo "      - $branch"
+          done
+          has_project_protect=true
+          break
+        fi
+      done
+
+      if [ "$has_project_protect" = false ] && [ -n "$CONFIG_PROTECTION_PROJECTS" ]; then
+        echo "    Project: (using global setting)"
+      fi
+
+      local effective_protect=$(get_config "protection.protected_branches" "main master")
+      echo "    → Effective: $effective_protect"
+      echo "    Note: main and master are ALWAYS protected"
+
+      # ========== REMOVE CONFIGURATION ==========
       echo ""
-      echo "  remove:"
-      echo "    auto_prune: $(get_config 'remove.auto_prune' 'true')"
+      echo "🗑️  Removal Behavior"
+      echo "────────────────────────────────────────────────"
+      echo "  Auto Prune:"
+      echo "    Global:  $CONFIG_REMOVE_GLOBAL_AUTO_PRUNE"
+
+      # Check if current project has override
+      local has_project_prune=false
+      for entry in $CONFIG_REMOVE_PROJECTS; do
+        local proj_name="${entry%%:*}"
+        local proj_value="${entry#*:}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: $proj_value ⭐ ACTIVE OVERRIDE"
+          has_project_prune=true
+          break
+        fi
+      done
+
+      if [ "$has_project_prune" = false ] && [ -n "$CONFIG_REMOVE_PROJECTS" ]; then
+        echo "    Project: (using global setting)"
+      fi
+
+      local effective_prune=$(get_config "remove.auto_prune" "true")
+      echo "    → Effective: $effective_prune"
+
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+      echo "💡 Hierarchy: Project-specific → Global → Hardcoded defaults"
+      echo "   Edit: $config_file"
       ;;
     init)
       # Create config file from example
