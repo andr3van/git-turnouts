@@ -94,6 +94,50 @@ get_base_worktree_dir() {
   fi
 }
 
+# Get absolute path (portable alternative to realpath)
+# Works on all Unix systems without requiring the realpath command
+get_absolute_path() {
+  local path="$1"
+
+  # If path is empty, return empty
+  if [ -z "$path" ]; then
+    echo ""
+    return
+  fi
+
+  # Expand tilde to home directory
+  case "$path" in
+    "~/"*)
+      path="${HOME}/${path#\~/}"
+      ;;
+    "~")
+      path="$HOME"
+      ;;
+  esac
+
+  # If path exists as a directory, cd into it and get pwd
+  if [ -d "$path" ]; then
+    (cd "$path" && pwd)
+  # If path doesn't exist yet, resolve the parent directory
+  elif [ -e "$path" ]; then
+    # Path exists as a file
+    local dir=$(dirname "$path")
+    local base=$(basename "$path")
+    echo "$(cd "$dir" 2>/dev/null && pwd)/$base"
+  else
+    # Path doesn't exist yet - resolve what we can
+    local dir=$(dirname "$path")
+    local base=$(basename "$path")
+    if [ -d "$dir" ]; then
+      echo "$(cd "$dir" && pwd)/$base"
+    else
+      # Even parent doesn't exist, return as-is
+      # This will be created by mkdir -p later
+      echo "$path"
+    fi
+  fi
+}
+
 # ============================================================================
 # CONFIGURATION SYSTEM
 # ============================================================================
@@ -871,8 +915,8 @@ cmd_add() {
 
   mkdir -p "$BASE_WORKTREE_DIR"
 
-  # Get absolute path of base dir
-  local BASE_WORKTREE_DIR_ABS=$(realpath "$BASE_WORKTREE_DIR")
+  # Get absolute path of base dir (using portable function instead of realpath)
+  local BASE_WORKTREE_DIR_ABS=$(get_absolute_path "$BASE_WORKTREE_DIR")
 
   # Create project-specific directory (always added for organization)
   local PROJECT_WORKTREE_DIR="$BASE_WORKTREE_DIR_ABS/$PROJECT_NAME"
