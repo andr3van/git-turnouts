@@ -949,10 +949,14 @@ cmd_add() {
       ;;
     iterm)
       echo "🖥️  Opening in iTerm..."
+      # Escape single quotes in path to prevent command injection
+      # Replaces ' with '\'' which closes the string, adds an escaped quote, and reopens the string
+      local ESCAPED_PATH
+      ESCAPED_PATH=$(printf '%s' "$TARGET_DIR" | sed "s/'/'\\\\''/g")
       osascript -e "tell application \"iTerm\"
         create window with default profile
         tell current session of current window
-          write text \"cd \\\"$TARGET_DIR\\\"\"
+          write text \"cd '$ESCAPED_PATH'\"
         end tell
       end tell"
       ;;
