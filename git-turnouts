@@ -486,7 +486,9 @@ validate_configuration() {
 load_configuration() {
   # Get the directory where git-turnouts is installed
   local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local config_file="$script_dir/.config.yml"
+
+  # Allow config file override via environment variable (useful for testing)
+  local config_file="${GIT_TURNOUTS_CONFIG:-$script_dir/.config.yml}"
 
   # Defaults are already set in variable declarations above
   # Only load and parse if config file exists
@@ -1270,7 +1272,9 @@ cmd_config() {
 
   # Get the directory where git-turnouts is installed
   local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local config_file="$script_dir/.config.yml"
+
+  # Allow config file override via environment variable (useful for testing)
+  local config_file="${GIT_TURNOUTS_CONFIG:-$script_dir/.config.yml}"
   local example_file="$script_dir/.config.yml.example"
 
   case "$subcommand" in
