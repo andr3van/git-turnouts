@@ -1,2 +1,28 @@
 # Personal configuration for all projects (copy from .config.yml.example)
 .config.yml
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux system files
+*~
+.directory
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+tests/*.tmp
+test-*.log
+
+# Backup files
+*.bak
+
+# Log files
+*.log
