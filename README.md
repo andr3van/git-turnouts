@@ -43,7 +43,7 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/git-turnouts.git
+   git clone https://github.com/andr3van/git-turnouts.git
    cd git-turnouts
    ```
 
@@ -789,7 +789,7 @@ Git Turnouts will show progress where possible. Be patient during network operat
    ```bash
    bash -x git-turnouts add branch-name
    ```
-3. **Open an issue**: [GitHub Issues](https://github.com/yourusername/git-turnouts/issues)
+3. **Open an issue**: [GitHub Issues](https://github.com/andr3van/git-turnouts/issues)
 
 ## Contributing
 

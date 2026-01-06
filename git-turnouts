@@ -1254,7 +1254,7 @@ EXAMPLES:
     git-turnouts list
 
 For more information, visit:
-https://github.com/yourusername/git-turnouts
+https://github.com/andr3van/git-turnouts
 
 EOF
 }
