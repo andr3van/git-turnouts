@@ -793,7 +793,22 @@ Git Turnouts will show progress where possible. Be patient during network operat
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Whether you're fixing bugs, adding features, improving documentation, or suggesting new ideas - all contributions are appreciated.
+
+**Getting Started:**
+1. Read our [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines
+2. Fork the repository and create a feature branch
+3. Make your changes and test thoroughly
+4. Submit a Pull Request with a clear description
+
+**Areas where help is appreciated:**
+- 🎨 New IDE/application adapters
+- 🐛 Bug reports and fixes
+- 📚 Documentation and tutorials
+- ✨ New features and enhancements
+- 🌍 Platform support (Windows native, additional Unix-like systems)
+
+For questions or discussions, open an issue on GitHub.
 
 ## License
 
