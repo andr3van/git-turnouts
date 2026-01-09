@@ -5,7 +5,7 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # ============================================================================
 # SHARED HELPER FUNCTIONS
@@ -485,7 +485,17 @@ validate_configuration() {
 # Load configuration from file (bash 3.2 compatible)
 load_configuration() {
   # Get the directory where git-turnouts is installed
-  local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Resolve symlinks to find the actual script location
+  local script_path="${BASH_SOURCE[0]}"
+  while [ -L "$script_path" ]; do
+    local link_target=$(readlink "$script_path")
+    if [[ "$link_target" == /* ]]; then
+      script_path="$link_target"
+    else
+      script_path="$(dirname "$script_path")/$link_target"
+    fi
+  done
+  local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 
   # Allow config file override via environment variable (useful for testing)
   local config_file="${GIT_TURNOUTS_CONFIG:-$script_dir/.config.yml}"
@@ -1271,7 +1281,17 @@ cmd_config() {
   local subcommand="${1:-show}"
 
   # Get the directory where git-turnouts is installed
-  local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # Resolve symlinks to find the actual script location
+  local script_path="${BASH_SOURCE[0]}"
+  while [ -L "$script_path" ]; do
+    local link_target=$(readlink "$script_path")
+    if [[ "$link_target" == /* ]]; then
+      script_path="$link_target"
+    else
+      script_path="$(dirname "$script_path")/$link_target"
+    fi
+  done
+  local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 
   # Allow config file override via environment variable (useful for testing)
   local config_file="${GIT_TURNOUTS_CONFIG:-$script_dir/.config.yml}"
