@@ -20,17 +20,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Checks for uncommitted changes and prompts for confirmation
   - Protected branches are respected during cleanup
   - Skips the main/primary worktree automatically
+- **Config Check Command**: New `config check` subcommand to verify tool dependencies
+  - `git-turnouts config check` - Check all required and optional tools
+  - `git-turnouts config check --verbose` - Show detailed information including full paths and purposes
+  - `git-turnouts config check --required` - Show only required tools (git, bash, jq)
+  - `git-turnouts config check --optional` - Show only optional tools (gh, shellcheck)
+  - Displays installation status with checkmarks (✅/❌), version numbers, and purposes
+  - Tool purposes shown in default output to help users understand each tool's role
+  - Only checks tools currently used by git-turnouts (no future/planned tools)
+  - Verbose mode adds full installation paths
+  - Provides installation guidance for missing tools
+  - Exit code 1 if any required tools are missing, 0 if all required tools present
 
 ### Changed
 - Enhanced `remove_worktree()` function with uncommitted changes detection
 - Refactored `remove_worktree()` to be a global helper function (usable by both remove and verify commands)
-- Updated help text to include verify command and its options
+- Updated help text to include verify command and config check subcommand with their options
 
 ### Documentation
 - Added "Verifying Worktrees" section to README.md
+- Added "Checking Dependencies" section to README.md with examples and tool descriptions
 - Updated `.config.yml.example` with new configuration options
 - Added comprehensive examples for verify command usage
+- Added comprehensive examples for config check command usage
 - Updated ROADMAP.md with completed Remote Branch Sync & Cleanup feature
+- Updated ROADMAP.md with completed Tool Dependency Check Command feature
 
 ## [1.0.1] - 2026-01-09
 
