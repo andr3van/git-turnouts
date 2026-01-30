@@ -70,6 +70,103 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
    git-turnouts --version
    ```
 
+## Checking Dependencies
+
+Git Turnouts can check which tools are installed and available on your system. This helps ensure all features work correctly and provides guidance for installing missing tools.
+
+### Basic Usage
+
+```bash
+# Check all tools (required and optional)
+git-turnouts config check
+
+# Show detailed information including paths and purposes
+git-turnouts config check --verbose
+
+# Check only required tools
+git-turnouts config check --required
+
+# Check only optional tools
+git-turnouts config check --optional
+```
+
+### Required Tools
+
+These tools are necessary for core git-turnouts functionality:
+
+- **git** (2.5+) - Version control and worktree operations
+- **bash** (3.2+) - Script execution
+- **jq** - JSON parsing for configuration and PR data
+
+### Optional Tools
+
+These tools enable additional features:
+
+- **gh** - GitHub CLI for PR integration features
+- **shellcheck** - Shell script linting for development
+
+### Example Output
+
+```bash
+$ git-turnouts config check
+
+📋 Tool Dependency Status
+
+Required Tools:
+      Tool          Version                Purpose
+  ─────────────────────────────────────────────────────────────────────────────────────
+  ✅  git           2.39.0                 Version control and worktree management
+  ✅  bash          3.2.57(1)-release      Script execution (requires 3.2+)
+  ✅  jq            1.6                    JSON parsing for GitHub PR integration
+
+Optional Tools:
+      Tool          Version                Purpose
+  ─────────────────────────────────────────────────────────────────────────────────────
+  ✅  gh            2.40.0                 GitHub Pull Request integration
+  ✅  shellcheck    0.9.0                  Shell script linting for development
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Status: All required tools are installed ✅
+```
+
+### Verbose Output
+
+Use `--verbose` to see full paths in addition to purposes:
+
+```bash
+$ git-turnouts config check --verbose
+
+📋 Tool Dependency Status
+
+Required Tools:
+      Tool          Version
+  ─────────────────────────────────────────────────
+  ✅  git           2.39.0
+      Path: /usr/bin/git
+      Purpose: Version control and worktree management
+  ✅  bash          3.2.57(1)-release
+      Path: /bin/bash
+      Purpose: Script execution (requires 3.2+)
+  ✅  jq            1.6
+      Path: /usr/local/bin/jq
+      Purpose: JSON parsing for GitHub PR integration
+```
+
+### Installing Missing Tools
+
+If any required tools are missing, you'll see installation guidance:
+
+```bash
+# macOS
+brew install jq gh
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install jq gh
+
+# Linux (RHEL/CentOS)
+sudo yum install jq gh
+```
+
 ## Usage
 
 ### Creating Worktrees
