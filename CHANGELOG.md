@@ -5,6 +5,33 @@ All notable changes to Git Turnouts will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Verify Command**: New `verify` command to check worktrees against remote branches
+  - `git-turnouts verify` - Check all worktrees against remote (read-only, safe)
+  - `git-turnouts verify --verbose` - Show detailed status for each worktree
+  - `git-turnouts verify --clean` - Remove worktrees with deleted remote branches (with confirmation)
+  - `git-turnouts verify --clean --dry-run` - Preview what would be removed without actually removing
+  - `git-turnouts verify --clean --yes` - Remove without confirmation prompt
+- **Remote Branch Verification**: Automatically fetches and checks if remote branches still exist
+- **Safety Features for Verification**:
+  - Warns about unpushed commits before removal
+  - Checks for uncommitted changes and prompts for confirmation
+  - Protected branches are respected during cleanup
+  - Skips the main/primary worktree automatically
+
+### Changed
+- Enhanced `remove_worktree()` function with uncommitted changes detection
+- Refactored `remove_worktree()` to be a global helper function (usable by both remove and verify commands)
+- Updated help text to include verify command and its options
+
+### Documentation
+- Added "Verifying Worktrees" section to README.md
+- Updated `.config.yml.example` with new configuration options
+- Added comprehensive examples for verify command usage
+- Updated ROADMAP.md with completed Remote Branch Sync & Cleanup feature
+
 ## [1.0.1] - 2026-01-09
 
 ### Fixed
