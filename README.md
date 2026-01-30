@@ -132,6 +132,34 @@ git-turnouts list
 git-turnouts ls
 ```
 
+### Verifying Worktrees
+
+Check if worktrees are still tracking active remote branches and clean up stale ones:
+
+```bash
+# Check all worktrees against remote (safe, read-only)
+git-turnouts verify
+
+# Show detailed status for each worktree
+git-turnouts verify --verbose
+
+# Preview what would be cleaned up (dry-run)
+git-turnouts verify --clean --dry-run
+
+# Clean up stale worktrees (with confirmation)
+git-turnouts verify --clean
+
+# Clean up without confirmation
+git-turnouts verify --clean --yes
+```
+
+The `verify` command helps you:
+- Identify worktrees whose remote branches have been deleted
+- Clean up stale worktrees after PRs are merged
+- Keep your workspace organized and up-to-date
+- Warn about unpushed commits before removal
+- Check for uncommitted changes
+
 ## How It Works
 
 ### Worktree Structure
