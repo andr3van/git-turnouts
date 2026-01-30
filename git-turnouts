@@ -1526,7 +1526,7 @@ COMMANDS:
     -v
         Show version information
 
-    config [show|init]
+    config [show|init|check]
         Manage configuration
 
 CONFIGURATION:
@@ -1535,6 +1535,9 @@ CONFIGURATION:
 
     git-turnouts config init
         Create .config.yml from .config.yml.example
+
+    git-turnouts config check [--verbose] [--required] [--optional]
+        Check tool dependencies and show status
 
     Configuration file: .config.yml
     Example template:   .config.yml.example
@@ -1570,6 +1573,10 @@ EXAMPLES:
     # Clean up stale worktrees
     git-turnouts verify --clean --dry-run
     git-turnouts verify --clean
+
+    # Check tool dependencies
+    git-turnouts config check
+    git-turnouts config check --verbose
 
 For more information, visit:
 https://github.com/andr3van/git-turnouts
@@ -1834,23 +1841,315 @@ cmd_config() {
       echo ""
       echo "   vim $config_file"
       ;;
+    check)
+      shift  # Remove 'check' from arguments
+      cmd_config_check "$@"
+      ;;
     *)
-      echo "Usage: git-turnouts config [show|init]"
+      echo "Usage: git-turnouts config [show|init|check]"
       echo ""
       echo "Commands:"
       echo "  show    Show current configuration (default)"
       echo "  init    Create .config.yml from .config.yml.example"
+      echo "  check   Check tool dependencies and show status"
       echo ""
       echo "Examples:"
       echo "  git-turnouts config show"
       echo "  git-turnouts config init"
+      echo "  git-turnouts config check"
       ;;
   esac
+}
+
+# Helper function to print tool status for config check command
+print_tool_status() {
+  local tool="$1"
+  local verbose="$2"
+
+  if [ "$TOOL_INSTALLED" = true ]; then
+    if [ "$verbose" = true ]; then
+      printf "  ✅  %-13s %-22s\n" "$tool" "$TOOL_VERSION"
+      printf "      Path: %s\n" "$TOOL_PATH"
+      printf "      Purpose: %s\n" "$(get_tool_purpose "$tool")"
+    else
+      printf "  ✅  %-13s %-22s %s\n" "$tool" "$TOOL_VERSION" "$(get_tool_purpose "$tool")"
+    fi
+  else
+    if [ "$verbose" = true ]; then
+      printf "  ❌  %-13s %-22s\n" "$tool" "Not installed"
+      printf "      Purpose: %s\n" "$(get_tool_purpose "$tool")"
+      get_tool_install_instructions "$tool"
+    else
+      printf "  ❌  %-13s %-22s %s\n" "$tool" "Not installed" "$(get_tool_purpose "$tool")"
+    fi
+  fi
+}
+
+# Show usage for config check command
+show_config_check_usage() {
+  cat << 'EOF'
+Usage: git-turnouts config check [options]
+
+Check status of required and optional tool dependencies.
+
+OPTIONS:
+    --verbose, -v     Show detailed information (paths, purposes)
+    --required, -r    Show only required tools
+    --optional, -o    Show only optional tools
+    --help, -h        Show this help message
+
+EXAMPLES:
+    git-turnouts config check              # Check all tools
+    git-turnouts config check --verbose    # Detailed output
+    git-turnouts config check --required   # Only required tools
+    git-turnouts config check --optional   # Only optional tools
+
+REQUIRED TOOLS:
+    git          Version control and worktree management (requires 2.5+)
+    bash         Script execution (requires 3.2+)
+    jq           JSON parsing for GitHub PR integration
+
+OPTIONAL TOOLS:
+    gh           GitHub Pull Request integration
+    fzf          Interactive branch selection (future feature)
+    yq           Advanced YAML configuration parsing (future feature)
+    shellcheck   Shell script linting for development
+
+EOF
+}
+
+# Config check subcommand - check tool dependencies
+cmd_config_check() {
+  # Parse flags
+  local VERBOSE=false
+  local REQUIRED_ONLY=false
+  local OPTIONAL_ONLY=false
+
+  for arg in "$@"; do
+    case "$arg" in
+      --verbose|-v)
+        VERBOSE=true
+        ;;
+      --required|-r)
+        REQUIRED_ONLY=true
+        ;;
+      --optional|-o)
+        OPTIONAL_ONLY=true
+        ;;
+      --help|-h)
+        show_config_check_usage
+        exit 0
+        ;;
+      *)
+        echo "❌ Error: Unknown option '$arg'"
+        show_config_check_usage
+        exit 1
+        ;;
+    esac
+  done
+
+  # Cannot use both filters
+  if [ "$REQUIRED_ONLY" = true ] && [ "$OPTIONAL_ONLY" = true ]; then
+    echo "❌ Error: Cannot use both --required and --optional"
+    exit 1
+  fi
+
+  # Define tool lists
+  local required_tools="git bash jq"
+  local optional_tools="gh shellcheck"
+
+  # Header
+  echo "📋 Tool Dependency Status"
+  echo ""
+
+  # Check required tools
+  local required_missing=0
+  if [ "$OPTIONAL_ONLY" = false ]; then
+    echo "Required Tools:"
+    if [ "$VERBOSE" = true ]; then
+      printf "      %-13s %-22s\n" "Tool" "Version"
+      echo "  ─────────────────────────────────────────────────"
+    else
+      printf "      %-13s %-22s %s\n" "Tool" "Version" "Purpose"
+      echo "  ─────────────────────────────────────────────────────────────────────────────────────"
+    fi
+    for tool in $required_tools; do
+      get_tool_info "$tool"
+      print_tool_status "$tool" "$VERBOSE"
+      if [ "$TOOL_INSTALLED" = false ]; then
+        required_missing=$((required_missing + 1))
+      fi
+    done
+    echo ""
+  fi
+
+  # Check optional tools
+  if [ "$REQUIRED_ONLY" = false ]; then
+    echo "Optional Tools:"
+    if [ "$VERBOSE" = true ]; then
+      printf "      %-13s %-22s\n" "Tool" "Version"
+      echo "  ─────────────────────────────────────────────────"
+    else
+      printf "      %-13s %-22s %s\n" "Tool" "Version" "Purpose"
+      echo "  ─────────────────────────────────────────────────────────────────────────────────────"
+    fi
+    for tool in $optional_tools; do
+      get_tool_info "$tool"
+      print_tool_status "$tool" "$VERBOSE"
+    done
+    echo ""
+  fi
+
+  # Summary
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  if [ "$REQUIRED_ONLY" = false ]; then
+    if [ $required_missing -eq 0 ]; then
+      echo "Status: All required tools are installed ✅"
+    else
+      echo "Status: Missing $required_missing required tool(s) ❌"
+      echo ""
+      echo "Run the installation commands above to fix missing dependencies."
+      exit 1
+    fi
+  else
+    echo "Status: Check complete"
+  fi
 }
 
 # ============================================================================
 # DEPENDENCY CHECKS
 # ============================================================================
+
+# Helper function to get version string for a tool
+get_tool_version() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      git --version 2>/dev/null | sed 's/git version //' | awk '{print $1}'
+      ;;
+    jq)
+      jq --version 2>/dev/null | sed 's/jq-//'
+      ;;
+    gh)
+      gh --version 2>/dev/null | head -1 | sed 's/gh version //' | awk '{print $1}'
+      ;;
+    bash)
+      bash --version 2>/dev/null | head -1 | sed 's/.*version //' | awk '{print $1}'
+      ;;
+    fzf)
+      fzf --version 2>/dev/null | awk '{print $1}'
+      ;;
+    yq)
+      yq --version 2>/dev/null | awk '{print $NF}'
+      ;;
+    shellcheck)
+      shellcheck --version 2>/dev/null | grep '^version:' | awk '{print $2}'
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
+}
+
+# Helper function to get full path to a tool
+get_tool_path() {
+  local tool="$1"
+  command -v "$tool" 2>/dev/null || echo ""
+}
+
+# Helper function to check if a tool is installed
+check_tool_installed() {
+  local tool="$1"
+  command -v "$tool" >/dev/null 2>&1
+}
+
+# Helper function to get all info about a tool
+# Sets global variables: TOOL_INSTALLED, TOOL_VERSION, TOOL_PATH
+get_tool_info() {
+  local tool="$1"
+
+  if check_tool_installed "$tool"; then
+    TOOL_INSTALLED="true"
+    TOOL_VERSION=$(get_tool_version "$tool")
+    TOOL_PATH=$(get_tool_path "$tool")
+  else
+    TOOL_INSTALLED="false"
+    TOOL_VERSION=""
+    TOOL_PATH=""
+  fi
+}
+
+# Helper function to get human-readable description of a tool
+get_tool_purpose() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      echo "Version control and worktree management"
+      ;;
+    jq)
+      echo "JSON parsing for GitHub PR integration"
+      ;;
+    bash)
+      echo "Script execution (requires 3.2+)"
+      ;;
+    gh)
+      echo "GitHub Pull Request integration"
+      ;;
+    fzf)
+      echo "Interactive branch selection (future feature)"
+      ;;
+    yq)
+      echo "Advanced YAML configuration parsing (future feature)"
+      ;;
+    shellcheck)
+      echo "Shell script linting for development"
+      ;;
+    *)
+      echo "Unknown tool"
+      ;;
+  esac
+}
+
+# Helper function to get installation instructions for a tool
+get_tool_install_instructions() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      echo "  Install: https://git-scm.com/downloads"
+      echo "  macOS:   brew install git"
+      echo "  Linux:   apt-get install git or yum install git"
+      ;;
+    jq)
+      echo "  Install: https://jqlang.github.io/jq/download/"
+      echo "  macOS:   brew install jq"
+      echo "  Linux:   apt-get install jq or yum install jq"
+      ;;
+    gh)
+      echo "  Install: https://cli.github.com/"
+      echo "  macOS:   brew install gh"
+      echo "  Linux:   See https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+      ;;
+    fzf)
+      echo "  Install: https://github.com/junegunn/fzf#installation"
+      echo "  macOS:   brew install fzf"
+      ;;
+    yq)
+      echo "  Install: https://github.com/mikefarah/yq#install"
+      echo "  macOS:   brew install yq"
+      ;;
+    shellcheck)
+      echo "  Install: https://github.com/koalaman/shellcheck#installing"
+      echo "  macOS:   brew install shellcheck"
+      ;;
+    bash)
+      echo "  Update:  Your bash version should work, but for the latest:"
+      echo "  macOS:   brew install bash"
+      ;;
+    *)
+      echo "  No installation instructions available"
+      ;;
+  esac
+}
 
 check_dependencies() {
   local missing=""
