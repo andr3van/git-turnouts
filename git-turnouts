@@ -139,6 +139,106 @@ get_absolute_path() {
 }
 
 # ============================================================================
+# REMOTE BRANCH VERIFICATION FUNCTIONS
+# ============================================================================
+
+# Check if a branch exists on the remote
+# Arguments: $1 = branch_name
+# Returns: 0 if exists, 1 if not
+check_remote_branch_exists() {
+  local branch="$1"
+
+  # Check if remote tracking ref exists locally
+  if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Check if local branch has unpushed commits
+# Arguments: $1 = branch_name
+# Sets global: UNPUSHED_COMMIT_COUNT
+# Returns: 0 if has unpushed commits, 1 if not or branch deleted
+check_unpushed_commits() {
+  local branch="$1"
+
+  # Check if remote branch exists
+  if ! git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    UNPUSHED_COMMIT_COUNT=0
+    return 1
+  fi
+
+  # Count commits ahead of remote
+  UNPUSHED_COMMIT_COUNT=$(git rev-list --count "origin/$branch..$branch" 2>/dev/null || echo "0")
+
+  if [ "$UNPUSHED_COMMIT_COUNT" -gt 0 ]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Analyze all worktrees for remote branch status
+# Arguments: $1 = verbose (true/false)
+# Sets globals: WORKTREES_WITH_REMOTE, WORKTREES_WITHOUT_REMOTE, WORKTREE_PATHS
+analyze_worktrees_remote_status() {
+  local verbose="${1:-false}"
+
+  # Initialize result variables
+  WORKTREES_WITH_REMOTE=""
+  WORKTREES_WITHOUT_REMOTE=""
+  WORKTREE_PATHS=""
+
+  # Get the main worktree path (the repository root)
+  local main_worktree_path=$(git rev-parse --show-toplevel)
+
+  # Parse git worktree list
+  while IFS= read -r line; do
+    # Skip lines without branch info (shouldn't happen with git worktree list)
+    if [[ ! "$line" =~ \[([^\]]+)\] ]]; then
+      continue
+    fi
+
+    local branch="${BASH_REMATCH[1]}"
+    local path=$(echo "$line" | awk '{print $1}')
+
+    # Skip the primary/main worktree (the repo itself)
+    # Compare paths by resolving both to absolute paths
+    local resolved_path=$(cd "$path" 2>/dev/null && pwd || echo "$path")
+    local resolved_main=$(cd "$main_worktree_path" 2>/dev/null && pwd || echo "$main_worktree_path")
+
+    if [ "$resolved_path" = "$resolved_main" ]; then
+      if [ "$verbose" = "true" ]; then
+        echo "⏭️  $branch → skipping main worktree"
+      fi
+      continue
+    fi
+
+    # Store path mapping
+    WORKTREE_PATHS="$WORKTREE_PATHS ${branch}:${path}"
+
+    # Check remote status
+    if check_remote_branch_exists "$branch"; then
+      WORKTREES_WITH_REMOTE="$WORKTREES_WITH_REMOTE $branch"
+      if [ "$verbose" = "true" ]; then
+        echo "✅ $branch → origin/$branch exists"
+      fi
+    else
+      WORKTREES_WITHOUT_REMOTE="$WORKTREES_WITHOUT_REMOTE $branch"
+      if [ "$verbose" = "true" ]; then
+        echo "❌ $branch → branch deleted from remote"
+      fi
+    fi
+  done < <(git worktree list)
+
+  # Trim leading spaces
+  WORKTREES_WITH_REMOTE="${WORKTREES_WITH_REMOTE## }"
+  WORKTREES_WITHOUT_REMOTE="${WORKTREES_WITHOUT_REMOTE## }"
+  WORKTREE_PATHS="${WORKTREE_PATHS## }"
+}
+
+# ============================================================================
 # CONFIGURATION SYSTEM
 # ============================================================================
 
@@ -1031,6 +1131,95 @@ cmd_add() {
 # REMOVE COMMAND - Remove worktrees
 # ============================================================================
 
+# Function to remove a single worktree
+# This is a shared function used by both remove and verify commands
+remove_worktree() {
+  local WORKTREE_NAME="$1"
+
+  # Get all worktrees and find the one matching the given name
+  local WORKTREE_PATH=""
+  local BRANCH_NAME=""
+  while IFS= read -r line; do
+    # Extract the branch name from brackets
+    if [[ "$line" =~ \[([^\]]+)\] ]]; then
+      local BRANCH="${BASH_REMATCH[1]}"
+      if [ "$BRANCH" = "$WORKTREE_NAME" ]; then
+        # Extract the path (first whitespace-separated token)
+        WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
+        BRANCH_NAME="$BRANCH"
+        break
+      fi
+    fi
+  done < <(git worktree list)
+
+  if [ -z "$WORKTREE_PATH" ]; then
+    echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME' - skipping"
+    return 1
+  fi
+
+  echo "Found worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
+
+  if [ ! -d "$WORKTREE_PATH" ]; then
+    echo "⚠️  Warning: Worktree path '$WORKTREE_PATH' does not exist - skipping"
+    return 1
+  fi
+
+  echo "Removing worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
+
+  # Check for uncommitted changes
+  cd "$WORKTREE_PATH" || {
+    echo "⚠️  Warning: Cannot access worktree directory"
+    return 1
+  }
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "⚠️  Warning: Worktree has uncommitted changes"
+    echo -n "   Continue with removal? [y/N] "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy] ]]; then
+      echo "   Skipped removal of '$WORKTREE_NAME'"
+      cd - > /dev/null
+      return 1
+    fi
+  fi
+  cd - > /dev/null
+
+  # Check if this is a protected branch to avoid deleting it
+  local DEFAULT_BRANCH
+  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+
+  # Get protected branches (project-specific → global → default: main master)
+  local protected_branches=$(get_config "protection.protected_branches" "main master")
+
+  # Check against configured protected branches (space-separated list)
+  local SKIP_BRANCH_DELETE=false
+  for protected in $protected_branches $DEFAULT_BRANCH; do
+    if [ "$BRANCH_NAME" = "$protected" ]; then
+      echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
+      SKIP_BRANCH_DELETE=true
+      break
+    fi
+  done
+
+  if git worktree remove --force "$WORKTREE_PATH"; then
+    echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
+
+    # Now remove the branch if it's safe to do so
+    if [ "$SKIP_BRANCH_DELETE" = false ]; then
+      echo "🗑️  Deleting branch '$BRANCH_NAME'..."
+      if git branch -D "$BRANCH_NAME" 2>/dev/null; then
+        echo "✅ Branch '$BRANCH_NAME' deleted successfully"
+      else
+        echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
+      fi
+    fi
+
+    return 0
+  else
+    echo "❌ Failed to remove worktree '$WORKTREE_NAME'"
+    return 1
+  fi
+}
+
 cmd_remove() {
   show_remove_usage() {
     echo "Usage: git-turnouts remove <worktree-name> [worktree-name2 ...]"
@@ -1047,77 +1236,6 @@ cmd_remove() {
     show_remove_usage
     exit 1
   fi
-
-  # Function to remove a single worktree
-  remove_worktree() {
-    local WORKTREE_NAME="$1"
-
-    # Get all worktrees and find the one matching the given name
-    local WORKTREE_PATH=""
-    local BRANCH_NAME=""
-    while IFS= read -r line; do
-      # Extract the branch name from brackets
-      if [[ "$line" =~ \[([^\]]+)\] ]]; then
-        local BRANCH="${BASH_REMATCH[1]}"
-        if [ "$BRANCH" = "$WORKTREE_NAME" ]; then
-          # Extract the path (first whitespace-separated token)
-          WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
-          BRANCH_NAME="$BRANCH"
-          break
-        fi
-      fi
-    done < <(git worktree list)
-
-    if [ -z "$WORKTREE_PATH" ]; then
-      echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME' - skipping"
-      return 1
-    fi
-
-    echo "Found worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
-
-    if [ ! -d "$WORKTREE_PATH" ]; then
-      echo "⚠️  Warning: Worktree path '$WORKTREE_PATH' does not exist - skipping"
-      return 1
-    fi
-
-    echo "Removing worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
-
-    # Check if this is a protected branch to avoid deleting it
-    local DEFAULT_BRANCH
-    DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
-
-    # Get protected branches (project-specific → global → default: main master)
-    local protected_branches=$(get_config "protection.protected_branches" "main master")
-
-    # Check against configured protected branches (space-separated list)
-    local SKIP_BRANCH_DELETE=false
-    for protected in $protected_branches $DEFAULT_BRANCH; do
-      if [ "$BRANCH_NAME" = "$protected" ]; then
-        echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
-        SKIP_BRANCH_DELETE=true
-        break
-      fi
-    done
-
-    if git worktree remove --force "$WORKTREE_PATH"; then
-      echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
-
-      # Now remove the branch if it's safe to do so
-      if [ "$SKIP_BRANCH_DELETE" = false ]; then
-        echo "🗑️  Deleting branch '$BRANCH_NAME'..."
-        if git branch -D "$BRANCH_NAME" 2>/dev/null; then
-          echo "✅ Branch '$BRANCH_NAME' deleted successfully"
-        else
-          echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
-        fi
-      fi
-
-      return 0
-    else
-      echo "❌ Failed to remove worktree '$WORKTREE_NAME'"
-      return 1
-    fi
-  }
 
   # Track success/failure
   local TOTAL=0
@@ -1190,6 +1308,180 @@ cmd_list() {
 }
 
 # ============================================================================
+# VERIFY COMMAND
+# ============================================================================
+
+show_verify_usage() {
+  cat << 'EOF'
+Usage: git-turnouts verify [options]
+
+Verify worktrees against remote branches and optionally clean up stale ones.
+
+OPTIONS:
+    --clean, -c       Remove worktrees with deleted remote branches
+    --dry-run, -n     Preview what would be removed (implies --clean)
+    --yes, -y         Skip confirmation prompt
+    --verbose, -v     Show detailed status for each worktree
+    --help, -h        Show this help message
+
+EXAMPLES:
+    git-turnouts verify                    # Check only (safe)
+    git-turnouts verify --verbose          # Detailed output
+    git-turnouts verify --clean --dry-run  # Preview cleanup
+    git-turnouts verify --clean            # Clean with confirmation
+    git-turnouts verify --clean --yes      # Clean without confirmation
+
+EOF
+}
+
+handle_verify_cleanup() {
+  local dry_run="$1"
+  local force_yes="$2"
+
+  echo ""
+  echo "🗑️  Worktrees to remove:"
+
+  # Show detailed list with warnings
+  for branch in $WORKTREES_WITHOUT_REMOTE; do
+    # Extract path for this branch
+    local path=""
+    for entry in $WORKTREE_PATHS; do
+      if [[ "$entry" == "$branch:"* ]]; then
+        path="${entry#*:}"
+        break
+      fi
+    done
+
+    echo "   • $branch"
+    echo "     Path: $path"
+
+    # Check for unpushed commits
+    if check_unpushed_commits "$branch"; then
+      echo "     ⚠️  WARNING: Has $UNPUSHED_COMMIT_COUNT unpushed commit(s)"
+    fi
+  done
+
+  echo ""
+
+  # Dry-run mode
+  if [ "$dry_run" = "true" ]; then
+    echo "🔍 DRY-RUN: No changes will be made"
+    echo "   Run without --dry-run to actually remove"
+    return 0
+  fi
+
+  # Determine if confirmation needed (always ask unless --yes flag)
+  local need_confirmation=true
+  if [ "$force_yes" = "true" ]; then
+    need_confirmation=false
+  fi
+
+  # Ask for confirmation
+  if [ "$need_confirmation" = "true" ]; then
+    echo -n "Remove these worktrees? [y/N] "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy] ]]; then
+      echo "❌ Cleanup cancelled"
+      return 1
+    fi
+  fi
+
+  # Remove worktrees
+  echo ""
+  echo "🗑️  Removing stale worktrees..."
+
+  # Use existing remove_worktree function
+  for branch in $WORKTREES_WITHOUT_REMOTE; do
+    remove_worktree "$branch"
+  done
+
+  # Auto-prune
+  local auto_prune=$(get_config "remove.auto_prune" "true")
+  if [ "$auto_prune" = "true" ]; then
+    echo ""
+    echo "🔧 Pruning stale references..."
+    git worktree prune
+  fi
+
+  echo ""
+  echo "✅ Cleanup complete!"
+}
+
+cmd_verify() {
+  # Parse flags
+  local CLEAN_MODE=false
+  local DRY_RUN=false
+  local FORCE_YES=false
+  local VERBOSE=false
+
+  for arg in "$@"; do
+    case "$arg" in
+      --clean|-c)
+        CLEAN_MODE=true
+        ;;
+      --dry-run|-n)
+        DRY_RUN=true
+        CLEAN_MODE=true  # Implied
+        ;;
+      --yes|-y)
+        FORCE_YES=true
+        ;;
+      --verbose|-v)
+        VERBOSE=true
+        ;;
+      --help|-h)
+        show_verify_usage
+        exit 0
+        ;;
+      *)
+        echo "❌ Error: Unknown option '$arg'"
+        show_verify_usage
+        exit 1
+        ;;
+    esac
+  done
+
+  # Step 1: Update remote references (always enabled)
+  echo "🔄 Updating remote references..."
+  if git fetch origin --prune --quiet 2>/dev/null; then
+    echo "✅ Remote references updated"
+  else
+    echo "⚠️  Warning: Failed to fetch remote (continuing with cached data)"
+  fi
+  echo ""
+
+  # Step 2: Analyze worktrees
+  echo "🔍 Checking worktrees against remote..."
+  echo ""
+
+  analyze_worktrees_remote_status "$VERBOSE"
+
+  # Step 3: Display results
+  local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
+  local active_count=$(echo "$WORKTREES_WITH_REMOTE" | wc -w | tr -d ' ')
+
+  # Always show summary
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "📊 Summary:"
+  echo "   ✅ Active: $active_count"
+  echo "   ❌ Stale: $stale_count"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # Step 4: Handle cleanup or show status message
+  if [ "$CLEAN_MODE" = "true" ] && [ $stale_count -gt 0 ]; then
+    handle_verify_cleanup "$DRY_RUN" "$FORCE_YES"
+  elif [ $stale_count -eq 0 ]; then
+    echo ""
+    echo "✨ All worktrees are up to date!"
+  elif [ $stale_count -gt 0 ]; then
+    echo ""
+    echo "💡 Found $stale_count stale worktree(s) with deleted remote branches."
+    echo "   Run 'git-turnouts verify --clean' to remove them."
+  fi
+}
+
+# ============================================================================
 # HELP & VERSION
 # ============================================================================
 
@@ -1215,6 +1507,14 @@ COMMANDS:
     list
     ls
         List all worktrees
+
+    verify [options]
+        Check worktrees against remote branches
+        Options:
+          --clean, -c      Remove worktrees with deleted remote branches
+          --dry-run, -n    Preview what would be removed
+          --yes, -y        Skip confirmation prompt
+          --verbose, -v    Show detailed status
 
     help
     --help
@@ -1262,6 +1562,14 @@ EXAMPLES:
 
     # List all worktrees
     git-turnouts list
+
+    # Verify worktrees against remote
+    git-turnouts verify
+    git-turnouts verify --verbose
+
+    # Clean up stale worktrees
+    git-turnouts verify --clean --dry-run
+    git-turnouts verify --clean
 
 For more information, visit:
 https://github.com/andr3van/git-turnouts
@@ -1622,6 +1930,9 @@ case "$COMMAND" in
     ;;
   list|ls)
     cmd_list "$@"
+    ;;
+  verify)
+    cmd_verify "$@"
     ;;
   config)
     cmd_config "$@"
