@@ -269,61 +269,37 @@ CONFIG_REMOVE_PROJECTS=""                # Space-separated: "project1:false proj
 # All sections support both global and project-specific settings
 parse_yaml_config() {
   local config_file="$1"
-  local section=""              # Level 1: worktree, defaults, protection, remove
-  local subsection=""           # Level 2: global, projects
+  local section=""              # Level 1: global, projects
   local in_project_item=false   # Are we inside a project list item?
   local in_list=false           # Are we inside a list (copy_files, protected_branches)?
   local list_type=""            # What type of list (copy_files, protected_branches)
 
   # Temporary variables for building project entries
   local current_project_name=""
-  local current_project_data=""     # For base_dir, open_with, auto_prune
-  local current_project_list=""     # For copy_files, protected_branches
+  local current_base_dir=""
+  local current_open_with=""
+  local current_auto_prune=""
+  local current_copy_files=""
+  local current_protected_branches=""
 
   while IFS= read -r line || [ -n "$line" ]; do
     # Skip comments and empty lines
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line// /}" ]] && continue
 
-    # Level 1: Section headers (e.g., "worktree:", "defaults:")
+    # No indent: Section headers (e.g., "global:", "projects:")
     if [[ "$line" =~ ^([a-z_]+):([[:space:]]*|[[:space:]]+.*)$ ]]; then
       # Save any pending project data before switching sections
       save_project_data
 
       section="${BASH_REMATCH[1]}"
-      subsection=""
       in_list=false
       in_project_item=false
       continue
     fi
 
-    # Level 2: Subsection headers (e.g., "  global:", "  projects:")
+    # 2-space indent, key:value: Keys under global (e.g., "  base_dir: ~/foo")
     if [[ "$line" =~ ^[[:space:]]{2}([a-z_]+):[[:space:]]*(.*)$ ]]; then
-      local key="${BASH_REMATCH[1]}"
-      local value="${BASH_REMATCH[2]}"
-
-      # Save any pending project data before switching subsections
-      if [ "$key" != "$subsection" ]; then
-        save_project_data
-      fi
-
-      subsection="$key"
-      in_list=false
-      in_project_item=false
-
-      # Handle direct key-value pairs at level 2 (if value is present)
-      if [ -n "$value" ]; then
-        # Expand tilde in paths
-        if [[ "$value" == ~* ]]; then
-          value="${value/#\~/$HOME}"
-        fi
-        # These are legacy format, no longer used but kept for compatibility
-      fi
-      continue
-    fi
-
-    # Level 3: Keys under global or list items under projects
-    if [[ "$line" =~ ^[[:space:]]{4}([a-z_-]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
@@ -332,22 +308,22 @@ parse_yaml_config() {
         value="${value/#\~/$HOME}"
       fi
 
-      if [ "$subsection" = "global" ]; then
+      if [ "$section" = "global" ]; then
         # Handle global settings
         if [ -z "$value" ]; then
-          # It's a list header (e.g., "    copy_files:" or "    protected_branches:")
+          # It's a list header (e.g., "  copy_files:" or "  protected_branches:")
           in_list=true
           list_type="$key"
         else
           # It's a direct key-value pair
-          case "${section}.global.${key}" in
-            "worktree.global.base_dir")
+          case "$key" in
+            "base_dir")
               CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
               ;;
-            "defaults.global.open_with")
+            "open_with")
               CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="$value"
               ;;
-            "remove.global.auto_prune")
+            "auto_prune")
               CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="$value"
               ;;
           esac
@@ -356,19 +332,22 @@ parse_yaml_config() {
       continue
     fi
 
-    # Level 3: List items under projects (e.g., "    - name: my-app")
-    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
+    # 2-space indent, dash: Project list items (e.g., "  - name: my-app")
+    if [[ "$line" =~ ^[[:space:]]{2}-[[:space:]]*(.*)$ ]]; then
       local rest="${BASH_REMATCH[1]}"
 
-      if [ "$subsection" = "projects" ]; then
+      if [ "$section" = "projects" ]; then
         # Save previous project before starting a new one
         save_project_data
 
         # Start new project item
         in_project_item=true
         current_project_name=""
-        current_project_data=""
-        current_project_list=""
+        current_base_dir=""
+        current_open_with=""
+        current_auto_prune=""
+        current_copy_files=""
+        current_protected_branches=""
         in_list=false
 
         # Check if name: is on the same line as dash
@@ -376,22 +355,20 @@ parse_yaml_config() {
           current_project_name="${BASH_REMATCH[1]}"
         fi
       fi
-      # Note: Global list items are handled at level 4 (6 spaces)
       continue
     fi
 
-    # Level 4: List items under global lists OR properties within project items
-    # Check for list items first (e.g., "      - .editorconfig")
-    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
+    # 4-space indent, dash: List items under global (e.g., "    - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
       local item="${BASH_REMATCH[1]}"
 
-      if [ "$in_list" = true ] && [ "$subsection" = "global" ]; then
+      if [ "$in_list" = true ] && [ "$section" = "global" ]; then
         # List item under global (e.g., copy_files or protected_branches)
-        case "${section}.global.${list_type}" in
-          "worktree.global.copy_files")
+        case "$list_type" in
+          "copy_files")
             CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
             ;;
-          "protection.global.protected_branches")
+          "protected_branches")
             CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
             ;;
         esac
@@ -399,8 +376,8 @@ parse_yaml_config() {
       continue
     fi
 
-    # Level 4: Properties within project items (e.g., "      name: value")
-    if [[ "$line" =~ ^[[:space:]]{6}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+    # 4-space indent, key:value: Project properties (e.g., "    base_dir: ~/custom")
+    if [[ "$line" =~ ^[[:space:]]{4}([a-z_]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
@@ -410,31 +387,50 @@ parse_yaml_config() {
       fi
 
       if [ "$in_project_item" = true ]; then
-        if [ "$key" = "name" ]; then
-          current_project_name="$value"
-        elif [ -z "$value" ]; then
-          # It's a list header under project (e.g., "      copy_files:")
+        if [ -z "$value" ]; then
+          # It's a list header under project (e.g., "    copy_files:")
           in_list=true
           list_type="$key"
         else
-          # It's a direct value under project
-          current_project_data="$value"
+          # It's a direct value under project (base_dir, open_with, auto_prune)
+          case "$key" in
+            "base_dir")
+              current_base_dir="$value"
+              ;;
+            "open_with")
+              current_open_with="$value"
+              ;;
+            "auto_prune")
+              current_auto_prune="$value"
+              ;;
+          esac
         fi
       fi
       continue
     fi
 
-    # Level 5: List items under project properties (e.g., "        - .editorconfig")
-    if [[ "$line" =~ ^[[:space:]]{8}-[[:space:]]*(.*)$ ]]; then
+    # 6-space indent, dash: List items under project properties (e.g., "      - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
       local item="${BASH_REMATCH[1]}"
 
       if [ "$in_project_item" = true ] && [ "$in_list" = true ]; then
         # Add to project's list (comma-separated)
-        if [ -z "$current_project_list" ]; then
-          current_project_list="$item"
-        else
-          current_project_list="$current_project_list,$item"
-        fi
+        case "$list_type" in
+          "copy_files")
+            if [ -z "$current_copy_files" ]; then
+              current_copy_files="$item"
+            else
+              current_copy_files="$current_copy_files,$item"
+            fi
+            ;;
+          "protected_branches")
+            if [ -z "$current_protected_branches" ]; then
+              current_protected_branches="$item"
+            else
+              current_protected_branches="$current_protected_branches,$item"
+            fi
+            ;;
+        esac
       fi
       continue
     fi
@@ -456,39 +452,38 @@ parse_yaml_config() {
 # Helper function to save accumulated project data
 save_project_data() {
   if [ "$in_project_item" = true ] && [ -n "$current_project_name" ]; then
-    # Determine which configuration variable to update based on section
-    case "$section" in
-      worktree)
-        if [ -n "$current_project_data" ]; then
-          # Save base_dir
-          CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        if [ -n "$current_project_list" ]; then
-          # Save copy_files list
-          CONFIG_WORKTREE_PROJECTS_COPY_FILES="$CONFIG_WORKTREE_PROJECTS_COPY_FILES ${current_project_name}:${current_project_list}"
-        fi
-        ;;
-      defaults)
-        if [ -n "$current_project_data" ]; then
-          CONFIG_DEFAULTS_PROJECTS="$CONFIG_DEFAULTS_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        ;;
-      protection)
-        if [ -n "$current_project_list" ]; then
-          CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_project_list}"
-        fi
-        ;;
-      remove)
-        if [ -n "$current_project_data" ]; then
-          CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        ;;
-    esac
+    # Save base_dir if present
+    if [ -n "$current_base_dir" ]; then
+      CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_base_dir}"
+    fi
+
+    # Save copy_files list if present
+    if [ -n "$current_copy_files" ]; then
+      CONFIG_WORKTREE_PROJECTS_COPY_FILES="$CONFIG_WORKTREE_PROJECTS_COPY_FILES ${current_project_name}:${current_copy_files}"
+    fi
+
+    # Save open_with if present
+    if [ -n "$current_open_with" ]; then
+      CONFIG_DEFAULTS_PROJECTS="$CONFIG_DEFAULTS_PROJECTS ${current_project_name}:${current_open_with}"
+    fi
+
+    # Save protected_branches if present
+    if [ -n "$current_protected_branches" ]; then
+      CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_protected_branches}"
+    fi
+
+    # Save auto_prune if present
+    if [ -n "$current_auto_prune" ]; then
+      CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_auto_prune}"
+    fi
 
     # Reset for next project
     current_project_name=""
-    current_project_data=""
-    current_project_list=""
+    current_base_dir=""
+    current_open_with=""
+    current_auto_prune=""
+    current_copy_files=""
+    current_protected_branches=""
     in_list=false
   fi
   in_project_item=false
