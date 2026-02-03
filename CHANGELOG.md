@@ -36,11 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced `remove_worktree()` function with uncommitted changes detection
 - Refactored `remove_worktree()` to be a global helper function (usable by both remove and verify commands)
 - Updated help text to include verify command and config check subcommand with their options
+- **Configuration System**: Updated configuration format so it can be consolidated where all project settings are defined in one place
+  - Replaced multi-section format with cleaner consolidated format
+  - All project settings (base_dir, open_with, auto_prune, copy_files, protected_branches) now under single project entry
+  - Simpler YAML structure: `global:` for global settings, `projects:` for project-specific settings
 
 ### Documentation
 - Added "Verifying Worktrees" section to README.md
 - Added "Checking Dependencies" section to README.md with examples and tool descriptions
-- Updated `.config.yml.example` with new configuration options
+- Completely rewritten `.config.yml.example` with consolidated format and comprehensive examples
+- Updated README.md configuration section with consolidated format examples
 - Added comprehensive examples for verify command usage
 - Added comprehensive examples for config check command usage
 - Updated ROADMAP.md with completed Remote Branch Sync & Cleanup feature
