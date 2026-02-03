@@ -588,6 +588,7 @@ remove:
 - Project name is **always added as a subdirectory** for organization
 - Project-specific settings override global settings
 - The `.config.yml.example` file serves as a template and reference
+- **`open_with` commands** (e.g., `idea`, `code`) must be available in your system PATH - refer to your IDE's documentation for setting up command-line tools
 
 ## Troubleshooting
 
