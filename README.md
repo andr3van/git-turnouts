@@ -197,13 +197,13 @@ git-turnouts add my-folder "PR Title"
 
 #### Open in Different Applications
 ```bash
-# Open in VS Code (default is IntelliJ IDEA)
+# Open in your editor (no automatic opening by default)
 git-turnouts add feature-x --open code
 
-# Open in iTerm
+# Open in a terminal
 git-turnouts add feature-x --open iterm
 
-# Available options: idea, code, iterm, warp, finder
+# Use any command/application that accepts a directory path
 ```
 
 ### Removing Worktrees
@@ -256,6 +256,20 @@ The `verify` command helps you:
 - Keep your workspace organized and up-to-date
 - Warn about unpushed commits before removal
 - Check for uncommitted changes
+- Respect protected branches (completely skip removal for protected worktrees)
+- Show protection status in verbose mode with 🛡️ indicator
+
+**Protected Branches in Verify:**
+The `verify` command clearly indicates protected branches in verbose mode:
+- **Active protected branches**: Shown as `✅ branch-name → origin/branch-name exists (PROTECTED)`
+- **Stale protected branches**: Shown as `🛡️ branch-name → branch deleted from remote (PROTECTED - will not be removed)`
+
+When cleaning up stale worktrees with `verify --clean`:
+- Protected branches are shown in a separate "Protected branches (will be skipped)" section
+- Completely skip removal (both worktree and branch are preserved)
+- Include protected stale branches in the "Protected (stale)" count in the summary
+
+This ensures important branches like `develop` or `staging` are never accidentally removed and are always clearly identified in the output.
 
 ## How It Works
 
@@ -360,29 +374,28 @@ See `.config.yml.example` for all available options with detailed comments. Here
 #### Worktree Configuration
 
 ```yaml
-worktree:
-  # Global settings apply to all projects
-  global:
-    # Base directory for all projects
-    # Project name is automatically added as a subdirectory
-    base_dir: ~/worktrees
+# Global settings apply to all projects
+global:
+  # Base directory for all projects
+  # Project name is automatically added as a subdirectory
+  base_dir: ~/worktrees
 
-    # Files to copy from main worktree to new worktrees
+  # Files to copy from main worktree to new worktrees
+  copy_files:
+    - .editorconfig
+    - .env.example
+    - .nvmrc
+
+# Project-specific settings (overrides global)
+# The 'name' must match your repository's directory name exactly
+projects:
+  - name: my-app
+    base_dir: ~/custom/my-app
     copy_files:
       - .editorconfig
-      - .env.example
-      - .nvmrc
-
-  # Project-specific settings (overrides global)
-  # The 'name' must match your repository's directory name exactly
-  projects:
-    - name: my-app
-      base_dir: ~/custom/my-app
-      copy_files:
-        - .editorconfig
-        - .env.local
-    - name: another-project
-      base_dir: /tmp/another-project
+      - .env.local
+  - name: another-project
+    base_dir: /tmp/another-project
 ```
 
 **How it works:**
@@ -431,14 +444,13 @@ copy_files:
 
 **Real-world example:**
 ```yaml
-worktree:
-  global:
-    base_dir: ~/worktrees
-    copy_files:
-      - .env              # Contains your personal database credentials
-      - .env.local        # Your local API keys
-      - .editorconfig
-      - .nvmrc
+global:
+  base_dir: ~/worktrees
+  copy_files:
+    - .env              # Contains your personal database credentials
+    - .env.local        # Your local API keys
+    - .editorconfig
+    - .nvmrc
 ```
 
 When you run `git-turnouts add feature-auth`, it will:
@@ -458,77 +470,30 @@ Every worktree is automatically set up with all your personal configurations. Ju
 
 ---
 
-#### Default Behavior
-
-```yaml
-defaults:
-  global:
-    # Default application to open worktrees (idea, code, iterm, warp, finder)
-    # idea/code = IDEs, iterm/warp = terminals, finder = file manager
-    open_with: code
-  projects:
-    - name: my-app
-      open_with: idea
-```
-
-#### Branch Protection
-
-```yaml
-protection:
-  global:
-    # Branches that cannot be deleted when removing worktrees
-    # Note: main, master, and your repo's default branch are always protected
-    protected_branches:
-      - develop
-      - staging
-      - production
-  projects:
-    - name: critical-app
-      protected_branches:
-        - develop
-        - staging
-        - production
-        - hotfix
-```
-
-#### Removal Behavior
-
-```yaml
-remove:
-  global:
-    # Auto-run git worktree prune after removing worktrees
-    auto_prune: true
-  projects:
-    - name: experimental
-      auto_prune: false
-```
-
 ### Configuration Examples
 
 #### Example 1: VS Code User
 
 ```yaml
-defaults:
-  global:
-    open_with: code
+global:
+  open_with: code
 ```
 
 #### Example 2: Global + Project-Specific Worktree Locations
 
 ```yaml
-worktree:
-  global:
-    # All projects go to ~/worktrees/{project-name} by default
-    # (project name is automatically added)
-    base_dir: ~/worktrees
-    copy_files:
-      - .editorconfig
-      - .env.example
+global:
+  # All projects go to ~/worktrees/{project-name} by default
+  # (project name is automatically added)
+  base_dir: ~/worktrees
+  copy_files:
+    - .editorconfig
+    - .env.example
 
-  # But my-important-project goes to a specific location
-  projects:
-    - name: my-important-project
-      base_dir: ~/critical
+# But my-important-project goes to a specific location
+projects:
+  - name: my-important-project
+    base_dir: ~/critical
 ```
 
 **Results:**
@@ -538,47 +503,61 @@ worktree:
 #### Example 3: Production Environment Protection
 
 ```yaml
-protection:
-  global:
-    # main and master are already protected by default
+global:
+  # main and master are already protected by default
+  protected_branches:
+    - develop
+    - staging
+    - production
+    - hotfix
+```
+
+#### Example 4: Complete Configuration Reference
+
+```yaml
+global:
+  # Base directory for worktrees (project name is auto-added)
+  # Default: ../worktree (relative to repo)
+  base_dir: ~/worktrees
+
+  # Automatic opening when creating worktrees
+  # Use any command that accepts a directory path
+  # Default: none (worktrees will not open automatically)
+  open_with: code
+
+  # Auto-prune after removing worktrees
+  # Default: true
+  auto_prune: true
+
+  # Files to copy from main worktree to new worktrees
+  # Useful for .env files, IDE configs, etc.
+  # Default: none
+  copy_files:
+    - .editorconfig
+    - .env.local
+
+  # Branches whose worktrees and branches cannot be removed
+  # Applies to both 'remove' and 'verify --clean' commands
+  # Note: main, master are always protected even if not listed
+  # Default: main, master only
+  protected_branches:
+    - develop
+    - staging
+
+projects:
+  # Project-specific settings override global settings
+  - name: critical-app
+    base_dir: ~/production
+    open_with: idea
     protected_branches:
       - develop
       - staging
       - production
-      - hotfix
-```
-
-#### Example 4: Complete Configuration
-
-```yaml
-worktree:
-  global:
-    base_dir: ~/worktrees
-    copy_files:
-      - .editorconfig
-      - .env.example
-  projects:
-    - name: critical-app
-      base_dir: ~/production
-
-defaults:
-  global:
-    open_with: code
-
-protection:
-  global:
-    protected_branches:
-      - develop
-      - staging
-
-remove:
-  global:
-    auto_prune: true
 ```
 
 **Results:**
-- Most projects: `~/worktrees/{project}/branch-name`
-- critical-app: `~/production/critical-app/branch-name`
+- Most projects: `~/worktrees/{project}/branch-name` (opens in VS Code)
+- critical-app: `~/production/critical-app/branch-name` (opens in IntelliJ IDEA, extra protected branches)
 
 ### Notes
 
@@ -833,14 +812,18 @@ open path/to/worktree
 xdg-open path/to/worktree
 ```
 
-**Current Application Support:**
-- **VS Code** (`code`): IDE - May work on both macOS and Linux if installed
-- **IntelliJ IDEA** (`idea`): IDE - Currently macOS-specific command
-- **iTerm** (`iterm`): Terminal - macOS only
-- **Warp** (`warp`): Terminal - Currently macOS-specific command
-- **Finder** (`finder`): File Manager - macOS only
+**Application Support:**
+- **Any CLI tool** that accepts a directory path argument (e.g., `code`, `idea`, `subl`, `vim`, `emacs`, `cursor`)
+- **macOS applications** via `open -a` command (e.g., `Warp`, `Sublime Text`)
+- **Custom wrapper scripts** for special cases (see troubleshooting)
 
-**Tip:** On platforms with limited application support, create worktrees without the `--open` flag and navigate manually.
+**Examples of commonly used applications:**
+- IDEs: `code` (VS Code), `idea` (IntelliJ IDEA), `subl` (Sublime), `cursor` (Cursor AI)
+- Editors: `vim`, `emacs`, `nano`
+- Terminals: Create wrapper scripts for terminal applications
+- File managers: Use `finder` on macOS or create wrappers for other platforms
+
+**Tip:** If your tool doesn't work automatically, create worktrees without the `--open` flag and navigate manually.
 
 ### Configuration Issues
 

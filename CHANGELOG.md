@@ -10,15 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Verify Command**: New `verify` command to check worktrees against remote branches
   - `git-turnouts verify` - Check all worktrees against remote (read-only, safe)
-  - `git-turnouts verify --verbose` - Show detailed status for each worktree
+  - `git-turnouts verify --verbose` - Show detailed status for each worktree including protection status
   - `git-turnouts verify --clean` - Remove worktrees with deleted remote branches (with confirmation)
   - `git-turnouts verify --clean --dry-run` - Preview what would be removed without actually removing
   - `git-turnouts verify --clean --yes` - Remove without confirmation prompt
 - **Remote Branch Verification**: Automatically fetches and checks if remote branches still exist
+- **Protected Branch Support in Verify**: Protected branches are now fully respected in verify command
+  - Active protected branches show "(PROTECTED)" indicator in verbose output
+  - Protected branches with deleted remotes are marked with 🛡️ in verbose output
+  - Protected stale worktrees are completely skipped from removal (both worktree and branch preserved)
+  - Separate summary count shows protected stale branches
+  - Clear indication of protected branches in cleanup preview
+  - Consistent protection status display regardless of branch being active or stale
 - **Safety Features for Verification**:
   - Warns about unpushed commits before removal
   - Checks for uncommitted changes and prompts for confirmation
-  - Protected branches are respected during cleanup
+  - Protected branches are fully respected during cleanup (worktree + branch preserved)
   - Skips the main/primary worktree automatically
 - **Config Check Command**: New `config check` subcommand to verify tool dependencies
   - `git-turnouts config check` - Check all required and optional tools
@@ -40,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaced multi-section format with cleaner consolidated format
   - All project settings (base_dir, open_with, auto_prune, copy_files, protected_branches) now under single project entry
   - Simpler YAML structure: `global:` for global settings, `projects:` for project-specific settings
+- **Open With Behavior**: Removed hardcoded "idea" default for `open_with` setting
+  - Default behavior changed from automatic opening in IntelliJ IDEA to opt-in (no automatic opening unless configured)
+  - `open_with` now accepts ANY command/application name without validation against a whitelist
+  - Implemented defensive programming for tool execution with multiple fallback approaches
+  - Shows helpful tip message when no `open_with` is configured: "💡 Tip: To automatically open worktrees, use --open <app> or configure open_with in .config.yml"
+  - Users can now use any editor/tool (idea, code, subl, vim, emacs, cursor, zed, etc.) without code changes
+  - ⚠️ **BREAKING CHANGE**: Users relying on the hardcoded "idea" default will need to add `open_with: idea` to their `.config.yml` to restore automatic opening behavior
 
 ### Documentation
 - Added "Verifying Worktrees" section to README.md
@@ -50,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added comprehensive examples for config check command usage
 - Updated ROADMAP.md with completed Remote Branch Sync & Cleanup feature
 - Updated ROADMAP.md with completed Tool Dependency Check Command feature
+- Updated `.config.yml.example` to document that `open_with` accepts any command (not just specific tools)
+- Fixed README.md to show correct configuration structure (`global:` instead of nested `defaults:` section)
+- Updated README.md to reflect no default automatic opening behavior
+- Updated all configuration examples to use generic command names instead of hardcoded tool references
+- Added "Protected Branches in Verify" section to README.md explaining protection behavior for both active and stale branches
+- Updated `protected_branches` configuration description to clarify it applies to both 'remove' and 'verify --clean' commands
+- Consolidated README configuration section by removing redundant individual sections (Default Behavior, Branch Protection, Removal Behavior)
+- Enhanced "Example 4: Complete Configuration Reference" with comprehensive comments for all settings and default values
+
+### Fixed
+- Configuration documentation inconsistencies between code and examples
+- Test case updated to verify that `open_with` accepts any value without validation warnings
 
 ## [1.0.1] - 2026-01-09
 

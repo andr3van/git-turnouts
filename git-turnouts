@@ -179,15 +179,39 @@ check_unpushed_commits() {
   fi
 }
 
+# Check if a branch is protected
+# Arguments: $1 = branch name
+# Returns: 0 (true) if protected, 1 (false) if not protected
+is_protected_branch() {
+  local branch="$1"
+
+  # Get default branch
+  local default_branch
+  default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+
+  # Get protected branches (project-specific → global → default: main master)
+  local protected_branches=$(get_config "protection.protected_branches" "main master")
+
+  # Check against configured protected branches
+  for protected in $protected_branches $default_branch; do
+    if [ "$branch" = "$protected" ]; then
+      return 0  # Protected
+    fi
+  done
+
+  return 1  # Not protected
+}
+
 # Analyze all worktrees for remote branch status
 # Arguments: $1 = verbose (true/false)
-# Sets globals: WORKTREES_WITH_REMOTE, WORKTREES_WITHOUT_REMOTE, WORKTREE_PATHS
+# Sets globals: WORKTREES_WITH_REMOTE, WORKTREES_WITHOUT_REMOTE, WORKTREES_PROTECTED_STALE, WORKTREE_PATHS
 analyze_worktrees_remote_status() {
   local verbose="${1:-false}"
 
   # Initialize result variables
   WORKTREES_WITH_REMOTE=""
   WORKTREES_WITHOUT_REMOTE=""
+  WORKTREES_PROTECTED_STALE=""
   WORKTREE_PATHS=""
 
   # Get the main worktree path (the repository root)
@@ -222,12 +246,25 @@ analyze_worktrees_remote_status() {
     if check_remote_branch_exists "$branch"; then
       WORKTREES_WITH_REMOTE="$WORKTREES_WITH_REMOTE $branch"
       if [ "$verbose" = "true" ]; then
-        echo "✅ $branch → origin/$branch exists"
+        # Check if this active branch is also protected
+        if is_protected_branch "$branch"; then
+          echo "✅ $branch → origin/$branch exists (PROTECTED)"
+        else
+          echo "✅ $branch → origin/$branch exists"
+        fi
       fi
     else
-      WORKTREES_WITHOUT_REMOTE="$WORKTREES_WITHOUT_REMOTE $branch"
-      if [ "$verbose" = "true" ]; then
-        echo "❌ $branch → branch deleted from remote"
+      # Remote branch deleted - check if protected
+      if is_protected_branch "$branch"; then
+        WORKTREES_PROTECTED_STALE="$WORKTREES_PROTECTED_STALE $branch"
+        if [ "$verbose" = "true" ]; then
+          echo "🛡️  $branch → branch deleted from remote (PROTECTED - will not be removed)"
+        fi
+      else
+        WORKTREES_WITHOUT_REMOTE="$WORKTREES_WITHOUT_REMOTE $branch"
+        if [ "$verbose" = "true" ]; then
+          echo "❌ $branch → branch deleted from remote"
+        fi
       fi
     fi
   done < <(git worktree list)
@@ -235,6 +272,7 @@ analyze_worktrees_remote_status() {
   # Trim leading spaces
   WORKTREES_WITH_REMOTE="${WORKTREES_WITH_REMOTE## }"
   WORKTREES_WITHOUT_REMOTE="${WORKTREES_WITHOUT_REMOTE## }"
+  WORKTREES_PROTECTED_STALE="${WORKTREES_PROTECTED_STALE## }"
   WORKTREE_PATHS="${WORKTREE_PATHS## }"
 }
 
@@ -253,8 +291,8 @@ CONFIG_WORKTREE_GLOBAL_COPY_FILES=""     # Space-separated list of global copy f
 CONFIG_WORKTREE_PROJECTS_COPY_FILES=""   # Space-separated: "project1:file1,file2 project2:file3"
 
 # Defaults configuration
-CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"  # Hardcoded default
-CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:code project2:idea"
+CONFIG_DEFAULTS_GLOBAL_OPEN_WITH=""  # No default - opening is opt-in
+CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:editor1 project2:editor2"
 
 # Protection configuration
 CONFIG_PROTECTION_GLOBAL_BRANCHES="main master"  # Hardcoded defaults (always protected)
@@ -491,36 +529,8 @@ save_project_data() {
 
 # Validate configuration values (bash 3.2 compatible)
 validate_configuration() {
-  # Validate defaults.global.open_with
-  if [ -n "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" ]; then
-    case "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" in
-      idea|code|iterm|warp|finder)
-        ;;  # Valid
-      *)
-        echo "⚠️  Warning: Invalid defaults.global.open_with value '$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH' in config"
-        echo "   Valid options: idea, code, iterm, warp, finder"
-        echo "   Falling back to default: idea"
-        CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"
-        ;;
-    esac
-  fi
-
-  # Validate project-specific open_with values
-  for entry in $CONFIG_DEFAULTS_PROJECTS; do
-    local proj_name="${entry%%:*}"
-    local open_with="${entry#*:}"
-    case "$open_with" in
-      idea|code|iterm|warp|finder)
-        ;;  # Valid
-      *)
-        echo "⚠️  Warning: Invalid open_with value '$open_with' for project '$proj_name'"
-        echo "   Valid options: idea, code, iterm, warp, finder"
-        echo "   This project will use global setting"
-        # Remove invalid entry
-        CONFIG_DEFAULTS_PROJECTS="${CONFIG_DEFAULTS_PROJECTS//${entry}/}"
-        ;;
-    esac
-  done
+  # No validation needed for open_with - any command name is accepted
+  # Validation happens at runtime when attempting to open
 
   # Validate worktree.global.base_dir exists or can be created
   if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
@@ -626,7 +636,7 @@ get_config() {
   fi
 
   case "$key" in
-    # Worktree base_dir: project-specific → global → hardcoded default
+    # base_dir setting: project-specific → global → auto-detect
     worktree.base_dir)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -650,7 +660,7 @@ get_config() {
       echo "$default"
       ;;
 
-    # Worktree copy_files: project-specific → global → hardcoded default
+    # copy_files setting: project-specific → global → empty
     worktree.copy_files)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -675,7 +685,7 @@ get_config() {
       echo "$default"
       ;;
 
-    # Defaults open_with: project-specific → global → hardcoded default
+    # open_with setting: project-specific → global → none (no automatic opening)
     defaults.open_with)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -699,7 +709,7 @@ get_config() {
       echo "$default"
       ;;
 
-    # Protection protected_branches: project-specific → global → hardcoded default
+    # protected_branches setting: project-specific → global → hardcoded default
     protection.protected_branches)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -724,7 +734,7 @@ get_config() {
       echo "$default"
       ;;
 
-    # Remove auto_prune: project-specific → global → hardcoded default
+    # auto_prune setting: project-specific → global → hardcoded default
     remove.auto_prune)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -822,7 +832,7 @@ copy_configured_files() {
 
 cmd_add() {
   # Load default from config
-  local OPEN_APP=$(get_config "defaults.open_with" "idea")
+  local OPEN_APP=$(get_config "defaults.open_with" "")
 
   # Function to show usage for add command
   show_add_usage() {
@@ -835,8 +845,8 @@ cmd_add() {
     echo "          Will check if this matches any PR title and use that PR's branch"
     echo "  [branch-name]: Optional, specific branch name (defaults to <name>)"
     echo "                 Will check if this matches any PR title and use that PR's branch"
-    echo "  --open <app>: Optional, specify where to open (default: idea)"
-    echo "                Available apps: idea, code, iterm, warp, finder"
+    echo "  --open <app>: Optional, specify where to open (default: none)"
+    echo "                Use any command/application that accepts a directory path"
     echo ""
     echo "PR Detection:"
     echo "  - PR Number: If <name> is numeric (e.g., 7113), directly checkouts that PR"
@@ -854,7 +864,7 @@ cmd_add() {
     echo "  git-turnouts add JIRA-123                     # Checks for PR with JIRA-123"
     echo "  git-turnouts add \"Exact PR Title\"             # Exact title match"
     echo "  git-turnouts add folder-name branch-name      # Different names"
-    echo "  git-turnouts add feature-x --open code        # Opens in VS Code"
+    echo "  git-turnouts add feature-x --open <editor>    # Opens in specified editor"
   }
 
   if [ -z "$1" ]; then
@@ -1004,16 +1014,8 @@ cmd_add() {
     fi
   fi
 
-  # Validate open app option
-  case "$OPEN_APP" in
-    idea|code|iterm|warp|finder)
-      ;;
-    *)
-      echo "❌ Error: Invalid app '$OPEN_APP'"
-      echo "Valid options: idea, code, iterm, warp, finder"
-      exit 1
-      ;;
-  esac
+  # No validation needed for OPEN_APP - any command is accepted
+  # The command will be validated at runtime when we try to execute it
 
   # Get the main worktree path
   local MAIN_WORKTREE=$(get_main_worktree)
@@ -1088,38 +1090,57 @@ cmd_add() {
   # Copy configured files
   copy_configured_files "$MAIN_WORKTREE" "$TARGET_DIR"
 
-  # Open in specified application
-  case "$OPEN_APP" in
-    idea)
-      echo "🧠 Opening in IntelliJ IDEA..."
-      idea "$TARGET_DIR"
-      ;;
-    code)
-      echo "📝 Opening in VS Code..."
-      code "$TARGET_DIR"
-      ;;
-    iterm)
-      echo "🖥️  Opening in iTerm..."
-      # Escape single quotes in path to prevent command injection
-      # Replaces ' with '\'' which closes the string, adds an escaped quote, and reopens the string
-      local ESCAPED_PATH
-      ESCAPED_PATH=$(printf '%s' "$TARGET_DIR" | sed "s/'/'\\\\''/g")
-      osascript -e "tell application \"iTerm\"
-        create window with default profile
-        tell current session of current window
-          write text \"cd '$ESCAPED_PATH'\"
-        end tell
-      end tell"
-      ;;
-    warp)
-      echo "🚀 Opening in Warp..."
-      open -a Warp "$TARGET_DIR"
-      ;;
-    finder)
-      echo "📂 Opening in Finder..."
-      open "$TARGET_DIR"
-      ;;
-  esac
+  # Open in specified application (if configured)
+  if [ -n "$OPEN_APP" ]; then
+    echo "🚀 Opening with '$OPEN_APP'..."
+
+    # Generic handling: try multiple approaches to support various tools
+    local opened=false
+
+    # Approach 1: Try direct execution (works for most CLI tools)
+    if command -v "$OPEN_APP" >/dev/null 2>&1; then
+      if "$OPEN_APP" "$TARGET_DIR" >/dev/null 2>&1 & then
+        echo "✅ Opened with $OPEN_APP"
+        opened=true
+      fi
+    fi
+
+    # Approach 2: Try with 'open -a' for macOS applications (works for GUI apps)
+    if [ "$opened" = false ] && command -v open >/dev/null 2>&1; then
+      if open -a "$OPEN_APP" "$TARGET_DIR" 2>/dev/null; then
+        echo "✅ Opened with $OPEN_APP"
+        opened=true
+      fi
+    fi
+
+    # Show helpful error if all approaches failed
+    if [ "$opened" = false ]; then
+      echo "⚠️  Warning: Could not open with '$OPEN_APP'"
+      echo ""
+      echo "   Troubleshooting:"
+      if ! command -v "$OPEN_APP" >/dev/null 2>&1; then
+        echo "   • Command '$OPEN_APP' not found in PATH"
+        echo "   • Make sure it's installed and accessible"
+      else
+        echo "   • The command exists but may not accept directory paths"
+      fi
+      echo ""
+      echo "   Solutions:"
+      echo "   • For CLI tools: Ensure the command accepts a directory path argument"
+      echo "   • For macOS apps: The app name should match the application name exactly"
+      echo "   • For special cases: Create a wrapper script (e.g., ~/bin/my-opener)"
+      echo ""
+      echo "   Example wrapper script for custom behavior:"
+      echo "   #!/bin/bash"
+      echo "   # Save as ~/bin/my-opener and make executable"
+      echo "   # Add your custom logic here to open \$1 (the directory path)"
+    fi
+  else
+    # Show helpful tip when no app is opened
+    echo ""
+    echo "💡 Tip: To automatically open worktrees, use --open <app> or configure open_with in .config.yml"
+    echo "   Set in global section or per-project. Use any command that accepts a directory path"
+  fi
 }
 
 # ============================================================================
@@ -1334,6 +1355,34 @@ handle_verify_cleanup() {
   local force_yes="$2"
 
   echo ""
+
+  # Show protected branches that will be skipped
+  local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
+  if [ $protected_stale_count -gt 0 ]; then
+    echo "🛡️  Protected branches (will be skipped):"
+    for branch in $WORKTREES_PROTECTED_STALE; do
+      # Extract path for this branch
+      local path=""
+      for entry in $WORKTREE_PATHS; do
+        if [[ "$entry" == "$branch:"* ]]; then
+          path="${entry#*:}"
+          break
+        fi
+      done
+      echo "   • $branch"
+      echo "     Path: $path"
+      echo "     Status: Remote deleted but branch is protected"
+    done
+    echo ""
+  fi
+
+  # Show non-protected stale worktrees
+  local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
+  if [ $stale_count -eq 0 ]; then
+    echo "✨ No stale worktrees to remove"
+    return 0
+  fi
+
   echo "🗑️  Worktrees to remove:"
 
   # Show detailed list with warnings
@@ -1454,6 +1503,7 @@ cmd_verify() {
   # Step 3: Display results
   local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
   local active_count=$(echo "$WORKTREES_WITH_REMOTE" | wc -w | tr -d ' ')
+  local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
 
   # Always show summary
   echo ""
@@ -1461,18 +1511,27 @@ cmd_verify() {
   echo "📊 Summary:"
   echo "   ✅ Active: $active_count"
   echo "   ❌ Stale: $stale_count"
+  if [ $protected_stale_count -gt 0 ]; then
+    echo "   🛡️  Protected (stale): $protected_stale_count"
+  fi
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   # Step 4: Handle cleanup or show status message
   if [ "$CLEAN_MODE" = "true" ] && [ $stale_count -gt 0 ]; then
     handle_verify_cleanup "$DRY_RUN" "$FORCE_YES"
-  elif [ $stale_count -eq 0 ]; then
+  elif [ "$CLEAN_MODE" = "true" ] && [ $stale_count -eq 0 ] && [ $protected_stale_count -gt 0 ]; then
+    echo ""
+    echo "✨ All stale worktrees are protected - nothing to remove!"
+  elif [ $stale_count -eq 0 ] && [ $protected_stale_count -eq 0 ]; then
     echo ""
     echo "✨ All worktrees are up to date!"
   elif [ $stale_count -gt 0 ]; then
     echo ""
     echo "💡 Found $stale_count stale worktree(s) with deleted remote branches."
     echo "   Run 'git-turnouts verify --clean' to remove them."
+    if [ $protected_stale_count -gt 0 ]; then
+      echo "   Note: $protected_stale_count protected branch(es) will be skipped."
+    fi
   fi
 }
 
@@ -1506,10 +1565,10 @@ COMMANDS:
     verify [options]
         Check worktrees against remote branches
         Options:
-          --clean, -c      Remove worktrees with deleted remote branches
+          --clean, -c      Remove worktrees with deleted remote branches (respects protected branches)
           --dry-run, -n    Preview what would be removed
           --yes, -y        Skip confirmation prompt
-          --verbose, -v    Show detailed status
+          --verbose, -v    Show detailed status including protection status
 
     help
     --help
@@ -1538,18 +1597,19 @@ CONFIGURATION:
     Example template:   .config.yml.example
 
     See .config.yml.example for all available options:
-    - worktree.base_dir: Custom worktree location
-    - worktree.copy_files: Files to copy to new worktrees
-    - defaults.open_with: Default IDE (idea, code, iterm, warp, finder)
-    - protection.protected_branches: Branches that cannot be deleted
-    - remove.auto_prune: Auto-run git worktree prune after removing
+    - global.base_dir: Custom worktree location
+    - global.copy_files: Files to copy to new worktrees
+    - global.open_with: Default IDE/editor command (any command that accepts paths)
+    - global.protected_branches: Branches that cannot be deleted
+    - global.auto_prune: Auto-run git worktree prune after removing
+    - projects[].open_with: Per-project overrides (and other settings)
 
 EXAMPLES:
     # Create worktree from PR number
     git-turnouts add 7113
 
-    # Create worktree and open in VS Code
-    git-turnouts add feature-x --open code
+    # Create worktree and open in your editor
+    git-turnouts add feature-x --open <editor>
 
     # Search for PR by title
     git-turnouts add "Add authentication"
@@ -1744,8 +1804,12 @@ cmd_config() {
         echo "    Project: (using global setting)"
       fi
 
-      local effective_open=$(get_config "defaults.open_with" "idea")
-      echo "    → Effective: $effective_open"
+      local effective_open=$(get_config "defaults.open_with" "")
+      if [ -n "$effective_open" ]; then
+        echo "    → Effective: $effective_open"
+      else
+        echo "    → Effective: (none - worktrees will not open automatically)"
+      fi
 
       # ========== PROTECTION CONFIGURATION ==========
       echo ""

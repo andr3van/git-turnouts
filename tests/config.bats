@@ -56,17 +56,19 @@ EOF
   assert_output_contains "code"
 }
 
-@test "config validates open_with values" {
-  # Create test config with invalid open_with value (safe - never touches real config)
+@test "config accepts any open_with value without validation" {
+  # Create test config with any command name (safe - never touches real config)
   cat > "$GIT_TURNOUTS_CONFIG" << 'EOF'
 global:
-  open_with: invalid-editor
+  open_with: my-custom-editor
 EOF
 
   run_git_turnouts config show
   assert_success
-  # Should show warning about invalid value
-  assert_output_contains "Warning" || assert_output_contains "invalid"
+  # Should accept any value without warnings (validation happens at runtime)
+  assert_output_contains "my-custom-editor"
+  assert_output_not_contains "Warning"
+  assert_output_not_contains "Invalid"
 }
 
 @test "config handles tilde expansion in paths" {

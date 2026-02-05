@@ -10,6 +10,27 @@
 # Project names are automatically detected from your repository directory names.
 # Example: /Users/you/projects/my-app → project name is "my-app"
 #
+# AVAILABLE CONFIGURATION PARAMETERS:
+# ===================================
+#
+# Global settings (apply to all projects unless overridden):
+#   • base_dir            - Base directory for all worktrees
+#   • open_with           - Command/application to open worktrees automatically
+#   • auto_prune          - Automatically prune after removing worktrees (true/false)
+#   • copy_files          - List of files to copy from main worktree to new worktrees
+#   • protected_branches  - Branches that cannot be deleted when removing worktrees
+#
+# Project-specific settings (override global settings):
+#   • name                - Project identifier (required, must match repo directory name)
+#   • base_dir            - Project-specific base directory
+#   • open_with           - Project-specific open command
+#   • auto_prune          - Project-specific prune setting
+#   • copy_files          - Project-specific files to copy
+#   • protected_branches  - Project-specific protected branches
+#
+# Note: All settings are optional except 'name' for project entries.
+#       All project settings are consolidated under a single project entry.
+#
 # CONFIGURATION STRUCTURE:
 # =======================
 # All project settings are consolidated under a single project entry.
@@ -28,8 +49,11 @@ global:
   # base_dir: ~/worktrees
 
   # Default IDE/application to open when creating worktrees
-  # Options: idea, code, iterm, warp, finder
-  # Default (if not specified): idea
+  # Use any command that accepts a directory path as an argument
+  # Examples: idea, code, subl, vim, emacs, code-insiders, cursor, etc.
+  # Special handling: iterm (terminal), finder (file browser)
+  # Default (if not specified): none (worktrees will not open automatically)
+  # To enable automatic opening, uncomment and set your preferred command:
   # open_with: idea
 
   # Automatically run 'git worktree prune' after removing worktrees
@@ -189,7 +213,7 @@ projects:
 # HARDCODED DEFAULTS (when not specified):
 # ========================================
 # global.base_dir: ../worktree (auto-detected from repo location)
-# global.open_with: idea
+# global.open_with: (none - worktrees will not open automatically)
 # global.auto_prune: true
 # global.copy_files: [] (no files copied)
 # global.protected_branches: [main, master] (always protected)
