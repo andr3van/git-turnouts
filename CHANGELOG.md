@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced `remove_worktree()` function with uncommitted changes detection
 - Refactored `remove_worktree()` to be a global helper function (usable by both remove and verify commands)
 - Updated help text to include verify command and config check subcommand with their options
+- **Protected Branch Enforcement in Remove Command**: The `remove` command now fully respects branch protection configuration
+  - Protected branches are completely refused for removal (both worktree and branch preserved)
+  - Consistent behavior with `verify --clean` command
+  - Clear error message with guidance when attempting to remove protected branches
 - **Configuration System**: Updated configuration format so it can be consolidated where all project settings are defined in one place
   - Replaced multi-section format with cleaner consolidated format
   - All project settings (base_dir, open_with, auto_prune, copy_files, protected_branches) now under single project entry

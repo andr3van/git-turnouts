@@ -1199,34 +1199,23 @@ remove_worktree() {
   fi
   cd - > /dev/null
 
-  # Check if this is a protected branch to avoid deleting it
-  local DEFAULT_BRANCH
-  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
-
-  # Get protected branches (project-specific → global → default: main master)
-  local protected_branches=$(get_config "protection.protected_branches" "main master")
-
-  # Check against configured protected branches (space-separated list)
-  local SKIP_BRANCH_DELETE=false
-  for protected in $protected_branches $DEFAULT_BRANCH; do
-    if [ "$BRANCH_NAME" = "$protected" ]; then
-      echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
-      SKIP_BRANCH_DELETE=true
-      break
-    fi
-  done
+  # Check if this is a protected branch to avoid removing it
+  if is_protected_branch "$BRANCH_NAME"; then
+    echo "🛡️  Error: Cannot remove protected branch '$BRANCH_NAME'"
+    echo "   Protected branches are configured to prevent accidental removal"
+    echo "   To remove this worktree, first remove '$BRANCH_NAME' from protected_branches in .config.yml"
+    return 1
+  fi
 
   if git worktree remove --force "$WORKTREE_PATH"; then
     echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
 
-    # Now remove the branch if it's safe to do so
-    if [ "$SKIP_BRANCH_DELETE" = false ]; then
-      echo "🗑️  Deleting branch '$BRANCH_NAME'..."
-      if git branch -D "$BRANCH_NAME" 2>/dev/null; then
-        echo "✅ Branch '$BRANCH_NAME' deleted successfully"
-      else
-        echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
-      fi
+    # Now remove the branch
+    echo "🗑️  Deleting branch '$BRANCH_NAME'..."
+    if git branch -D "$BRANCH_NAME" 2>/dev/null; then
+      echo "✅ Branch '$BRANCH_NAME' deleted successfully"
+    else
+      echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
     fi
 
     return 0
