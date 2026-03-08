@@ -660,29 +660,39 @@ get_config() {
       echo "$default"
       ;;
 
-    # copy_files setting: project-specific → global → empty
+    # copy_files setting: project-specific ADDS TO global (additive behavior)
     worktree.copy_files)
-      # 1. Check project-specific setting
+      local result=""
+
+      # 1. Start with global setting
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
+        result="$CONFIG_WORKTREE_GLOBAL_COPY_FILES"
+      fi
+
+      # 2. Add project-specific files (if any)
       if [ -n "$project" ]; then
         for entry in $CONFIG_WORKTREE_PROJECTS_COPY_FILES; do
           local proj_name="${entry%%:*}"
           local proj_files="${entry#*:}"
           if [ "$proj_name" = "$project" ]; then
-            # Convert comma-separated to space-separated
-            echo "${proj_files//,/ }"
-            return
+            # Convert comma-separated to space-separated and append
+            local proj_files_space="${proj_files//,/ }"
+            if [ -n "$result" ]; then
+              result="$result $proj_files_space"
+            else
+              result="$proj_files_space"
+            fi
+            break
           fi
         done
       fi
 
-      # 2. Use global setting
-      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
-        echo "$CONFIG_WORKTREE_GLOBAL_COPY_FILES"
-        return
+      # 3. Return combined result or default
+      if [ -n "$result" ]; then
+        echo "$result"
+      else
+        echo "$default"
       fi
-
-      # 3. Use hardcoded default (empty)
-      echo "$default"
       ;;
 
     # open_with setting: project-specific → global → none (no automatic opening)
@@ -709,29 +719,41 @@ get_config() {
       echo "$default"
       ;;
 
-    # protected_branches setting: project-specific → global → hardcoded default
+    # protected_branches setting: project-specific ADDS TO global (additive behavior)
+    # Note: main and master are always included as base protection
     protection.protected_branches)
-      # 1. Check project-specific setting
+      local result="main master"  # Always start with main and master
+
+      # 1. Add global branches
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
+        # Global config already includes main/master from initialization
+        # Extract only the additional branches (skip main/master to avoid duplicates)
+        for branch in $CONFIG_PROTECTION_GLOBAL_BRANCHES; do
+          if [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+            result="$result $branch"
+          fi
+        done
+      fi
+
+      # 2. Add project-specific branches (if any)
       if [ -n "$project" ]; then
         for entry in $CONFIG_PROTECTION_PROJECTS; do
           local proj_name="${entry%%:*}"
           local proj_branches="${entry#*:}"
           if [ "$proj_name" = "$project" ]; then
-            # Convert comma-separated to space-separated, always include main/master
-            echo "main master ${proj_branches//,/ }"
-            return
+            # Convert comma-separated to space-separated and append
+            result="$result ${proj_branches//,/ }"
+            break
           fi
         done
       fi
 
-      # 2. Use global setting (always include main/master)
-      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
-        echo "$CONFIG_PROTECTION_GLOBAL_BRANCHES"
-        return
+      # 3. Return combined result (or default if somehow empty)
+      if [ -n "$result" ]; then
+        echo "$result"
+      else
+        echo "$default"
       fi
-
-      # 3. Use hardcoded default (main master are always protected)
-      echo "$default"
       ;;
 
     # auto_prune setting: project-specific → global → hardcoded default

@@ -13,20 +13,28 @@
 # AVAILABLE CONFIGURATION PARAMETERS:
 # ===================================
 #
-# Global settings (apply to all projects unless overridden):
+# Global settings (apply to all projects):
 #   • base_dir            - Base directory for all worktrees
 #   • open_with           - Command/application to open worktrees automatically
 #   • auto_prune          - Automatically prune after removing worktrees (true/false)
 #   • copy_files          - List of files to copy from main worktree to new worktrees
 #   • protected_branches  - Branches that cannot be deleted when removing worktrees
 #
-# Project-specific settings (override global settings):
+# Project-specific settings:
 #   • name                - Project identifier (required, must match repo directory name)
-#   • base_dir            - Project-specific base directory
-#   • open_with           - Project-specific open command
-#   • auto_prune          - Project-specific prune setting
-#   • copy_files          - Project-specific files to copy
-#   • protected_branches  - Project-specific protected branches
+#   • base_dir            - Project-specific base directory (OVERRIDES global)
+#   • open_with           - Project-specific open command (OVERRIDES global)
+#   • auto_prune          - Project-specific prune setting (OVERRIDES global)
+#   • copy_files          - Project-specific files to copy (ADDS TO global)
+#   • protected_branches  - Project-specific protected branches (ADDS TO global)
+#
+# CONFIGURATION HIERARCHY:
+# =======================
+#   Scalar settings (base_dir, open_with, auto_prune):
+#     → Project-specific OVERRIDES global (replacement)
+#
+#   List settings (copy_files, protected_branches):
+#     → Project-specific ADDS TO global (additive/combined)
 #
 # Note: All settings are optional except 'name' for project entries.
 #       All project settings are consolidated under a single project entry.
@@ -86,7 +94,10 @@ global:
 
 # Project-Specific Settings
 # ==========================
-# Project-specific settings override global settings.
+# Project-specific settings combine with or override global settings:
+#   • Scalar settings (base_dir, open_with, auto_prune): OVERRIDE global
+#   • List settings (copy_files, protected_branches): ADD TO global
+#
 # The 'name' must match your repository's directory name exactly.
 # Example: If your repo is at ~/code/my-app, use name: my-app
 #
@@ -147,35 +158,36 @@ projects:
 #     - .env.example
 #     - .editorconfig
 
-# Example 3: Mixed global and project-specific settings
-# ------------------------------------------------------
+# Example 3: Mixed global and project-specific settings (shows additive behavior)
+# -------------------------------------------------------------------------------
 # global:
 #   base_dir: ~/worktrees
 #   open_with: code
 #   copy_files:
-#     - .editorconfig
+#     - .editorconfig      # Global: all projects get this
+#     - .env.example
 #   protected_branches:
-#     - develop
+#     - develop            # Global: all projects protect this
 #   auto_prune: true
 #
 # projects:
 #   - name: critical-app
-#     base_dir: ~/production/critical
-#     open_with: idea
-#     auto_prune: false
-#     copy_files:
-#       - .editorconfig
-#       - .env.production
-#     protected_branches:
-#       - develop
-#       - staging
+#     base_dir: ~/production/critical  # OVERRIDES global base_dir
+#     open_with: idea                  # OVERRIDES global open_with
+#     auto_prune: false                # OVERRIDES global auto_prune
+#     copy_files:                      # ADDS TO global copy_files
+#       - .env.production              # Result: .editorconfig, .env.example, .env.production
+#     protected_branches:              # ADDS TO global protected_branches
+#       - staging                      # Result: main, master, develop, staging, production
 #       - production
 #   - name: backend-services
-#     open_with: idea
+#     open_with: idea                  # OVERRIDES global open_with
+#     # copy_files: inherits global (.editorconfig, .env.example)
+#     # protected_branches: inherits global (main, master, develop)
 #   - name: frontend-app
-#     open_with: code
-#     copy_files:
-#       - .prettierrc
+#     open_with: code                  # Same as global, explicit override
+#     copy_files:                      # ADDS TO global copy_files
+#       - .prettierrc                  # Result: .editorconfig, .env.example, .prettierrc, .eslintrc.js
 #       - .eslintrc.js
 
 # Example 4: All global settings (no project overrides)

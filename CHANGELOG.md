@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaced multi-section format with cleaner consolidated format
   - All project settings (base_dir, open_with, auto_prune, copy_files, protected_branches) now under single project entry
   - Simpler YAML structure: `global:` for global settings, `projects:` for project-specific settings
+- **Configuration Hierarchy Behavior**: Clarified and improved how project-specific settings interact with global settings
+  - **List-based settings** (`copy_files`, `protected_branches`): Project-specific settings now **ADD TO** global settings (additive/combined)
+  - **Scalar settings** (`base_dir`, `open_with`, `auto_prune`): Project-specific settings **OVERRIDE** global settings (replacement)
+  - This makes list settings more intuitive - project files/branches combine with global instead of replacing
+  - Example: Global has `copy_files: [.editorconfig]`, project adds `[.env.local]` → Result: both files copied
+  - Protected branches are always combined: `main`, `master` (hardcoded) + global branches + project branches
+  - Comprehensive documentation added to README.md and .config.yml.example
 - **Open With Behavior**: Removed hardcoded "idea" default for `open_with` setting
   - Default behavior changed from automatic opening in IntelliJ IDEA to opt-in (no automatic opening unless configured)
   - `open_with` now accepts ANY command/application name without validation against a whitelist

@@ -386,14 +386,15 @@ global:
     - .env.example
     - .nvmrc
 
-# Project-specific settings (overrides global)
+# Project-specific settings
+# List settings (copy_files, protected_branches): ADD TO global
+# Scalar settings (base_dir, open_with, auto_prune): OVERRIDE global
 # The 'name' must match your repository's directory name exactly
 projects:
   - name: my-app
-    base_dir: ~/custom/my-app
-    copy_files:
-      - .editorconfig
-      - .env.local
+    base_dir: ~/custom/my-app      # Overrides global base_dir
+    copy_files:                     # Adds to global copy_files
+      - .env.local                  # Combined: .editorconfig, .env.example, .nvmrc, .env.local
   - name: another-project
     base_dir: /tmp/another-project
 ```
@@ -565,7 +566,9 @@ projects:
 - Configuration is **centralized** - one `.config.yml` file in the git-turnouts directory manages all projects
 - Project names are detected automatically from the repository directory name
 - Project name is **always added as a subdirectory** for organization
-- Project-specific settings override global settings
+- **Configuration hierarchy:**
+  - **List-based settings** (`copy_files`, `protected_branches`): Project-specific **adds to** global (additive)
+  - **Scalar settings** (`base_dir`, `open_with`, `auto_prune`): Project-specific **overrides** global (replacement)
 - The `.config.yml.example` file serves as a template and reference
 - **`open_with` commands** (e.g., `idea`, `code`) must be available in your system PATH - refer to your IDE's documentation for setting up command-line tools
 

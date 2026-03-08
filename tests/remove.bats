@@ -135,6 +135,76 @@ EOF
   fi
 }
 
+@test "protected_branches are additive (project adds to global)" {
+  # Test that project-specific branches ADD TO global branches
+  source "$GIT_TURNOUTS_SCRIPT"
+
+  PROJECT_NAME=$(basename "$TEST_TEMP_DIR")
+  cat > "$GIT_TURNOUTS_CONFIG" << EOF
+global:
+  protected_branches:
+    - develop
+    - staging
+
+projects:
+  - name: $PROJECT_NAME
+    protected_branches:
+      - production
+      - hotfix
+EOF
+
+  load_configuration 2>/dev/null || true
+
+  # Test that ALL branches are protected (global + project)
+  # main and master are always protected
+  if is_protected_branch "main"; then
+    true
+  else
+    fail "main should always be protected"
+  fi
+
+  if is_protected_branch "master"; then
+    true
+  else
+    fail "master should always be protected"
+  fi
+
+  # Global branches should be included
+  if is_protected_branch "develop"; then
+    true
+  else
+    fail "develop should be protected (from global config)"
+  fi
+
+  if is_protected_branch "staging"; then
+    true
+  else
+    fail "staging should be protected (from global config)"
+  fi
+
+  # Project branches should be added
+  if is_protected_branch "production"; then
+    true
+  else
+    fail "production should be protected (from project config)"
+  fi
+
+  if is_protected_branch "hotfix"; then
+    true
+  else
+    fail "hotfix should be protected (from project config)"
+  fi
+
+  # Result: main, master, develop, staging, production, hotfix all protected
+
+  # Non-protected branch should return false
+  if is_protected_branch "feature-x"; then
+    fail "feature-x should not be protected"
+  else
+    true  # Success
+  fi
+}
+
 @test "remove command returns exit code 1 for non-existent worktree" {
   run_git_turnouts remove non-existent-branch
   [ "$status" -eq 1 ]
