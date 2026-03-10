@@ -1,5 +1,5 @@
 # Git Turnouts Configuration
-# ==========================
+# ===========================
 # This file manages configuration for ALL your projects from one central location.
 # It lives in the git-turnouts installation directory.
 #
@@ -10,197 +10,222 @@
 # Project names are automatically detected from your repository directory names.
 # Example: /Users/you/projects/my-app → project name is "my-app"
 #
+# AVAILABLE CONFIGURATION PARAMETERS:
+# ===================================
+#
+# Global settings (apply to all projects):
+#   • base_dir            - Base directory for all worktrees
+#   • open_with           - Command/application to open worktrees automatically
+#   • auto_prune          - Automatically prune after removing worktrees (true/false)
+#   • copy_files          - List of files to copy from main worktree to new worktrees
+#   • protected_branches  - Branches that cannot be deleted when removing worktrees
+#
+# Project-specific settings:
+#   • name                - Project identifier (required, must match repo directory name)
+#   • base_dir            - Project-specific base directory (OVERRIDES global)
+#   • open_with           - Project-specific open command (OVERRIDES global)
+#   • auto_prune          - Project-specific prune setting (OVERRIDES global)
+#   • copy_files          - Project-specific files to copy (ADDS TO global)
+#   • protected_branches  - Project-specific protected branches (ADDS TO global)
+#
 # CONFIGURATION HIERARCHY:
 # =======================
-# All sections support both 'global' (applies to all projects) and 'projects'
-# (applies to specific projects) settings. Project-specific settings override
-# global settings. All settings are optional and have sensible defaults.
+#   Scalar settings (base_dir, open_with, auto_prune):
+#     → Project-specific OVERRIDES global (replacement)
+#
+#   List settings (copy_files, protected_branches):
+#     → Project-specific ADDS TO global (additive/combined)
+#
+# Note: All settings are optional except 'name' for project entries.
+#       All project settings are consolidated under a single project entry.
+#
+# CONFIGURATION STRUCTURE:
+# =======================
+# All project settings are consolidated under a single project entry.
+# Define everything in one place for cleaner, more maintainable configuration.
 
-# Worktree Configuration
-# ----------------------
-worktree:
-  # Global settings apply to all projects unless overridden
-  global:
-    # Base directory for all worktrees
-    # The project name will automatically be added as a subdirectory
-    # Result: ~/worktrees/{project-name}/{branch-name}
-    # Default (if not specified): ../worktree (auto-detected)
-    # base_dir: ~/worktrees
+# Global Settings
+# ===============
+# Global settings apply to all projects unless overridden by project-specific settings.
+# All global settings are optional and have sensible defaults.
 
-    # Files to copy from main worktree to new worktrees
-    # Useful for environment files, editor configs, etc.
-    # Default (if not specified): none
-    # copy_files:
-    #   - .editorconfig
-    #   - .env.example
-    #   - .nvmrc
-    #   - .ruby-version
-    #   - .prettierrc
-    #   - .eslintrc.js
-    #   - .idea/codeStyles/
+global:
+  # Base directory for all worktrees
+  # The project name will automatically be added as a subdirectory
+  # Result: ~/worktrees/{project-name}/{branch-name}
+  # Default (if not specified): ../worktree (auto-detected)
+  # base_dir: ~/worktrees
 
-  # Project-specific settings override global settings
-  # The 'name' must match your repository's directory name exactly
-  # Example: If your repo is at ~/code/my-app, use name: my-app
-  projects:
-    # - name: my-app
-    #   base_dir: ~/custom/my-app
-    #   copy_files:
-    #     - .editorconfig
-    #     - .env.local
-    # - name: another-project
-    #   base_dir: /tmp/another-project
-    #   copy_files:
-    #     - .env.example
-    # - name: critical-project
-    #   base_dir: ~/production/critical
-    #   # No copy_files specified, uses global setting
+  # Default IDE/application to open when creating worktrees
+  # Use any command that accepts a directory path as an argument
+  # Examples: idea, code, subl, vim, emacs, code-insiders, cursor, etc.
+  # Special handling: iterm (terminal), finder (file browser)
+  # Default (if not specified): none (worktrees will not open automatically)
+  # To enable automatic opening, uncomment and set your preferred command:
+  # open_with: idea
 
-# Default Behavior
-# ----------------
-defaults:
-  # Global default behavior for all projects
-  global:
-    # Default IDE/application to open when creating worktrees
-    # Options: idea, code, iterm, warp, finder
-    # Default (if not specified): idea
-    # open_with: idea
+  # Automatically run 'git worktree prune' after removing worktrees
+  # This cleans up stale worktree references
+  # Options: true, false, yes, no, 1, 0
+  # Default (if not specified): true
+  # auto_prune: true
 
-  # Project-specific default behavior
-  # Overrides global setting for specific projects
-  projects:
-    # - name: my-app
-    #   open_with: code
-    # - name: backend-project
-    #   open_with: idea
-    # - name: frontend-project
-    #   open_with: code
+  # Files to copy from main worktree to new worktrees
+  # Useful for environment files, editor configs, etc.
+  # Default (if not specified): none
+  # copy_files:
+  #   - .editorconfig
+  #   - .env.example
+  #   - .nvmrc
+  #   - .ruby-version
+  #   - .prettierrc
+  #   - .eslintrc.js
+  #   - .idea/codeStyles/
 
-# Branch Protection
-# -----------------
-protection:
-  # Global branch protection for all projects
-  global:
-    # Branches that cannot be deleted when removing worktrees
-    # The worktree will be removed, but the branch will remain
-    # Note: 'main' and 'master' are ALWAYS protected (even if not listed)
-    # Default (if not specified): main, master only
-    # protected_branches:
-    #   - develop
-    #   - staging
-    #   - production
-    #   - release
+  # Branches that cannot be deleted when removing worktrees
+  # The worktree will be removed, but the branch will remain
+  # Note: 'main' and 'master' are ALWAYS protected (even if not listed)
+  # Default (if not specified): main, master only
+  # protected_branches:
+  #   - develop
+  #   - staging
+  #   - production
+  #   - release
 
-  # Project-specific branch protection
-  # Overrides global setting for specific projects
-  # Note: 'main' and 'master' are ALWAYS protected regardless
-  projects:
-    # - name: my-app
-    #   protected_branches:
-    #     - develop
-    #     - staging
-    #     - production
-    # - name: experimental-project
-    #   protected_branches:
-    #     # Only main/master protected for this project
+# Project-Specific Settings
+# ==========================
+# Project-specific settings combine with or override global settings:
+#   • Scalar settings (base_dir, open_with, auto_prune): OVERRIDE global
+#   • List settings (copy_files, protected_branches): ADD TO global
+#
+# The 'name' must match your repository's directory name exactly.
+# Example: If your repo is at ~/code/my-app, use name: my-app
+#
+# ALL settings for a project are now defined in ONE place!
 
-# Removal Behavior
-# ----------------
-remove:
-  # Global removal behavior for all projects
-  global:
-    # Automatically run 'git worktree prune' after removing worktrees
-    # This cleans up stale worktree references
-    # Options: true, false, yes, no, 1, 0
-    # Default (if not specified): true
-    # auto_prune: true
+projects:
+  # Example 1: Full configuration for a critical project
+  # - name: critical-app
+  #   base_dir: ~/production/critical
+  #   open_with: idea
+  #   auto_prune: false
+  #   copy_files:
+  #     - .editorconfig
+  #     - .env.production
+  #     - .nvmrc
+  #   protected_branches:
+  #     - develop
+  #     - staging
+  #     - production
 
-  # Project-specific removal behavior
-  # Overrides global setting for specific projects
-  projects:
-    # - name: my-app
-    #   auto_prune: false
-    # - name: another-project
-    #   auto_prune: true
+  # Example 2: Backend project with specific IDE
+  # - name: backend-services
+  #   open_with: idea
+  #   copy_files:
+  #     - .editorconfig
+  #     - .env.example
+
+  # Example 3: Frontend project with VS Code
+  # - name: frontend-app
+  #   open_with: code
+  #   base_dir: ~/dev/frontend
+  #   copy_files:
+  #     - .prettierrc
+  #     - .eslintrc.js
+
+  # Example 4: Experimental project with minimal protection
+  # - name: experimental
+  #   auto_prune: true
+  #   # Only main/master protected for this project
+
+  # Example 5: Project using only global settings
+  # - name: standard-project
+  #   # No overrides, uses all global settings
 
 # Configuration Examples
-# ----------------------
-#
-# Example 1: Minimal configuration (VS Code user, all projects)
-# -------------------------------------------------------------
-# defaults:
-#   global:
-#     open_with: code
-#
+# ======================
+
+# Example 1: Minimal global configuration (VS Code user)
+# -------------------------------------------------------
+# global:
+#   open_with: code
+
 # Example 2: Global worktree location with file copying
-# -----------------------------------------------------
-# worktree:
-#   global:
-#     base_dir: ~/dev/worktrees
-#     copy_files:
-#       - .env.example
-#       - .editorconfig
+# ------------------------------------------------------
+# global:
+#   base_dir: ~/dev/worktrees
+#   copy_files:
+#     - .env.example
+#     - .editorconfig
+
+# Example 3: Mixed global and project-specific settings (shows additive behavior)
+# -------------------------------------------------------------------------------
+# global:
+#   base_dir: ~/worktrees
+#   open_with: code
+#   copy_files:
+#     - .editorconfig      # Global: all projects get this
+#     - .env.example
+#   protected_branches:
+#     - develop            # Global: all projects protect this
+#   auto_prune: true
 #
-# Example 3: Mixed global and project-specific settings
-# -----------------------------------------------------
-# worktree:
-#   global:
-#     base_dir: ~/worktrees
-#     copy_files:
-#       - .editorconfig
-#   projects:
-#     - name: critical-app
-#       base_dir: ~/production/critical
-#       copy_files:
-#         - .editorconfig
-#         - .env.production
-# defaults:
-#   global:
-#     open_with: code
-#   projects:
-#     - name: backend-services
-#       open_with: idea
-# protection:
-#   global:
-#     protected_branches:
-#       - develop
-#   projects:
-#     - name: critical-app
-#       protected_branches:
-#         - develop
-#         - staging
-#         - production
-# remove:
-#   global:
-#     auto_prune: true
-#   projects:
-#     - name: experimental
-#       auto_prune: false
-#
+# projects:
+#   - name: critical-app
+#     base_dir: ~/production/critical  # OVERRIDES global base_dir
+#     open_with: idea                  # OVERRIDES global open_with
+#     auto_prune: false                # OVERRIDES global auto_prune
+#     copy_files:                      # ADDS TO global copy_files
+#       - .env.production              # Result: .editorconfig, .env.example, .env.production
+#     protected_branches:              # ADDS TO global protected_branches
+#       - staging                      # Result: main, master, develop, staging, production
+#       - production
+#   - name: backend-services
+#     open_with: idea                  # OVERRIDES global open_with
+#     # copy_files: inherits global (.editorconfig, .env.example)
+#     # protected_branches: inherits global (main, master, develop)
+#   - name: frontend-app
+#     open_with: code                  # Same as global, explicit override
+#     copy_files:                      # ADDS TO global copy_files
+#       - .prettierrc                  # Result: .editorconfig, .env.example, .prettierrc, .eslintrc.js
+#       - .eslintrc.js
+
 # Example 4: All global settings (no project overrides)
-# ----------------------------------------------------
-# worktree:
-#   global:
-#     base_dir: ~/worktrees
+# -----------------------------------------------------
+# global:
+#   base_dir: ~/worktrees
+#   open_with: code
+#   auto_prune: true
+#   copy_files:
+#     - .env.example
+#     - .nvmrc
+#   protected_branches:
+#     - develop
+#     - staging
+
+# Example 5: Multiple projects with different needs
+# -------------------------------------------------
+# global:
+#   open_with: idea
+#   base_dir: ~/worktrees
+#
+# projects:
+#   - name: project-a
 #     copy_files:
-#       - .env.example
-#       - .nvmrc
-# defaults:
-#   global:
+#       - .env.local
+#       - .editorconfig
+#   - name: project-b
 #     open_with: code
-# protection:
-#   global:
 #     protected_branches:
 #       - develop
-#       - staging
-# remove:
-#   global:
-#     auto_prune: true
-#
+#   - name: project-c
+#     base_dir: ~/custom/project-c
+#     auto_prune: false
+
 # HARDCODED DEFAULTS (when not specified):
 # ========================================
-# worktree.global.base_dir: ../worktree (auto-detected from repo location)
-# worktree.global.copy_files: [] (no files copied)
-# defaults.global.open_with: idea
-# protection.global.protected_branches: [main, master] (always protected)
-# remove.global.auto_prune: true
+# global.base_dir: ../worktree (auto-detected from repo location)
+# global.open_with: (none - worktrees will not open automatically)
+# global.auto_prune: true
+# global.copy_files: [] (no files copied)
+# global.protected_branches: [main, master] (always protected)

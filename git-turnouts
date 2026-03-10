@@ -5,7 +5,7 @@
 
 set -e
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 # ============================================================================
 # SHARED HELPER FUNCTIONS
@@ -139,6 +139,144 @@ get_absolute_path() {
 }
 
 # ============================================================================
+# REMOTE BRANCH VERIFICATION FUNCTIONS
+# ============================================================================
+
+# Check if a branch exists on the remote
+# Arguments: $1 = branch_name
+# Returns: 0 if exists, 1 if not
+check_remote_branch_exists() {
+  local branch="$1"
+
+  # Check if remote tracking ref exists locally
+  if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Check if local branch has unpushed commits
+# Arguments: $1 = branch_name
+# Sets global: UNPUSHED_COMMIT_COUNT
+# Returns: 0 if has unpushed commits, 1 if not or branch deleted
+check_unpushed_commits() {
+  local branch="$1"
+
+  # Check if remote branch exists
+  if ! git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    UNPUSHED_COMMIT_COUNT=0
+    return 1
+  fi
+
+  # Count commits ahead of remote
+  UNPUSHED_COMMIT_COUNT=$(git rev-list --count "origin/$branch..$branch" 2>/dev/null || echo "0")
+
+  if [ "$UNPUSHED_COMMIT_COUNT" -gt 0 ]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Check if a branch is protected
+# Arguments: $1 = branch name
+# Returns: 0 (true) if protected, 1 (false) if not protected
+is_protected_branch() {
+  local branch="$1"
+
+  # Get default branch
+  local default_branch
+  default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+
+  # Get protected branches (project-specific → global → default: main master)
+  local protected_branches=$(get_config "protection.protected_branches" "main master")
+
+  # Check against configured protected branches
+  for protected in $protected_branches $default_branch; do
+    if [ "$branch" = "$protected" ]; then
+      return 0  # Protected
+    fi
+  done
+
+  return 1  # Not protected
+}
+
+# Analyze all worktrees for remote branch status
+# Arguments: $1 = verbose (true/false)
+# Sets globals: WORKTREES_WITH_REMOTE, WORKTREES_WITHOUT_REMOTE, WORKTREES_PROTECTED_STALE, WORKTREE_PATHS
+analyze_worktrees_remote_status() {
+  local verbose="${1:-false}"
+
+  # Initialize result variables
+  WORKTREES_WITH_REMOTE=""
+  WORKTREES_WITHOUT_REMOTE=""
+  WORKTREES_PROTECTED_STALE=""
+  WORKTREE_PATHS=""
+
+  # Get the main worktree path (the repository root)
+  local main_worktree_path=$(git rev-parse --show-toplevel)
+
+  # Parse git worktree list
+  while IFS= read -r line; do
+    # Skip lines without branch info (shouldn't happen with git worktree list)
+    if [[ ! "$line" =~ \[([^\]]+)\] ]]; then
+      continue
+    fi
+
+    local branch="${BASH_REMATCH[1]}"
+    local path=$(echo "$line" | awk '{print $1}')
+
+    # Skip the primary/main worktree (the repo itself)
+    # Compare paths by resolving both to absolute paths
+    local resolved_path=$(cd "$path" 2>/dev/null && pwd || echo "$path")
+    local resolved_main=$(cd "$main_worktree_path" 2>/dev/null && pwd || echo "$main_worktree_path")
+
+    if [ "$resolved_path" = "$resolved_main" ]; then
+      if [ "$verbose" = "true" ]; then
+        echo "⏭️  $branch → skipping main worktree"
+      fi
+      continue
+    fi
+
+    # Store path mapping
+    WORKTREE_PATHS="$WORKTREE_PATHS ${branch}:${path}"
+
+    # Check remote status
+    if check_remote_branch_exists "$branch"; then
+      WORKTREES_WITH_REMOTE="$WORKTREES_WITH_REMOTE $branch"
+      if [ "$verbose" = "true" ]; then
+        # Check if this active branch is also protected
+        if is_protected_branch "$branch"; then
+          echo "✅ $branch → origin/$branch exists (PROTECTED)"
+        else
+          echo "✅ $branch → origin/$branch exists"
+        fi
+      fi
+    else
+      # Remote branch deleted - check if protected
+      if is_protected_branch "$branch"; then
+        WORKTREES_PROTECTED_STALE="$WORKTREES_PROTECTED_STALE $branch"
+        if [ "$verbose" = "true" ]; then
+          echo "🛡️  $branch → branch deleted from remote (PROTECTED - will not be removed)"
+        fi
+      else
+        WORKTREES_WITHOUT_REMOTE="$WORKTREES_WITHOUT_REMOTE $branch"
+        if [ "$verbose" = "true" ]; then
+          echo "❌ $branch → branch deleted from remote"
+        fi
+      fi
+    fi
+  done < <(git worktree list)
+
+  # Trim leading spaces
+  WORKTREES_WITH_REMOTE="${WORKTREES_WITH_REMOTE## }"
+  WORKTREES_WITHOUT_REMOTE="${WORKTREES_WITHOUT_REMOTE## }"
+  WORKTREES_PROTECTED_STALE="${WORKTREES_PROTECTED_STALE## }"
+  WORKTREE_PATHS="${WORKTREE_PATHS## }"
+}
+
+# ============================================================================
 # CONFIGURATION SYSTEM
 # ============================================================================
 
@@ -153,8 +291,8 @@ CONFIG_WORKTREE_GLOBAL_COPY_FILES=""     # Space-separated list of global copy f
 CONFIG_WORKTREE_PROJECTS_COPY_FILES=""   # Space-separated: "project1:file1,file2 project2:file3"
 
 # Defaults configuration
-CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"  # Hardcoded default
-CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:code project2:idea"
+CONFIG_DEFAULTS_GLOBAL_OPEN_WITH=""  # No default - opening is opt-in
+CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:editor1 project2:editor2"
 
 # Protection configuration
 CONFIG_PROTECTION_GLOBAL_BRANCHES="main master"  # Hardcoded defaults (always protected)
@@ -169,61 +307,37 @@ CONFIG_REMOVE_PROJECTS=""                # Space-separated: "project1:false proj
 # All sections support both global and project-specific settings
 parse_yaml_config() {
   local config_file="$1"
-  local section=""              # Level 1: worktree, defaults, protection, remove
-  local subsection=""           # Level 2: global, projects
+  local section=""              # Level 1: global, projects
   local in_project_item=false   # Are we inside a project list item?
   local in_list=false           # Are we inside a list (copy_files, protected_branches)?
   local list_type=""            # What type of list (copy_files, protected_branches)
 
   # Temporary variables for building project entries
   local current_project_name=""
-  local current_project_data=""     # For base_dir, open_with, auto_prune
-  local current_project_list=""     # For copy_files, protected_branches
+  local current_base_dir=""
+  local current_open_with=""
+  local current_auto_prune=""
+  local current_copy_files=""
+  local current_protected_branches=""
 
   while IFS= read -r line || [ -n "$line" ]; do
     # Skip comments and empty lines
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line// /}" ]] && continue
 
-    # Level 1: Section headers (e.g., "worktree:", "defaults:")
+    # No indent: Section headers (e.g., "global:", "projects:")
     if [[ "$line" =~ ^([a-z_]+):([[:space:]]*|[[:space:]]+.*)$ ]]; then
       # Save any pending project data before switching sections
       save_project_data
 
       section="${BASH_REMATCH[1]}"
-      subsection=""
       in_list=false
       in_project_item=false
       continue
     fi
 
-    # Level 2: Subsection headers (e.g., "  global:", "  projects:")
+    # 2-space indent, key:value: Keys under global (e.g., "  base_dir: ~/foo")
     if [[ "$line" =~ ^[[:space:]]{2}([a-z_]+):[[:space:]]*(.*)$ ]]; then
-      local key="${BASH_REMATCH[1]}"
-      local value="${BASH_REMATCH[2]}"
-
-      # Save any pending project data before switching subsections
-      if [ "$key" != "$subsection" ]; then
-        save_project_data
-      fi
-
-      subsection="$key"
-      in_list=false
-      in_project_item=false
-
-      # Handle direct key-value pairs at level 2 (if value is present)
-      if [ -n "$value" ]; then
-        # Expand tilde in paths
-        if [[ "$value" == ~* ]]; then
-          value="${value/#\~/$HOME}"
-        fi
-        # These are legacy format, no longer used but kept for compatibility
-      fi
-      continue
-    fi
-
-    # Level 3: Keys under global or list items under projects
-    if [[ "$line" =~ ^[[:space:]]{4}([a-z_-]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
@@ -232,22 +346,22 @@ parse_yaml_config() {
         value="${value/#\~/$HOME}"
       fi
 
-      if [ "$subsection" = "global" ]; then
+      if [ "$section" = "global" ]; then
         # Handle global settings
         if [ -z "$value" ]; then
-          # It's a list header (e.g., "    copy_files:" or "    protected_branches:")
+          # It's a list header (e.g., "  copy_files:" or "  protected_branches:")
           in_list=true
           list_type="$key"
         else
           # It's a direct key-value pair
-          case "${section}.global.${key}" in
-            "worktree.global.base_dir")
+          case "$key" in
+            "base_dir")
               CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
               ;;
-            "defaults.global.open_with")
+            "open_with")
               CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="$value"
               ;;
-            "remove.global.auto_prune")
+            "auto_prune")
               CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="$value"
               ;;
           esac
@@ -256,19 +370,22 @@ parse_yaml_config() {
       continue
     fi
 
-    # Level 3: List items under projects (e.g., "    - name: my-app")
-    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
+    # 2-space indent, dash: Project list items (e.g., "  - name: my-app")
+    if [[ "$line" =~ ^[[:space:]]{2}-[[:space:]]*(.*)$ ]]; then
       local rest="${BASH_REMATCH[1]}"
 
-      if [ "$subsection" = "projects" ]; then
+      if [ "$section" = "projects" ]; then
         # Save previous project before starting a new one
         save_project_data
 
         # Start new project item
         in_project_item=true
         current_project_name=""
-        current_project_data=""
-        current_project_list=""
+        current_base_dir=""
+        current_open_with=""
+        current_auto_prune=""
+        current_copy_files=""
+        current_protected_branches=""
         in_list=false
 
         # Check if name: is on the same line as dash
@@ -276,22 +393,20 @@ parse_yaml_config() {
           current_project_name="${BASH_REMATCH[1]}"
         fi
       fi
-      # Note: Global list items are handled at level 4 (6 spaces)
       continue
     fi
 
-    # Level 4: List items under global lists OR properties within project items
-    # Check for list items first (e.g., "      - .editorconfig")
-    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
+    # 4-space indent, dash: List items under global (e.g., "    - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
       local item="${BASH_REMATCH[1]}"
 
-      if [ "$in_list" = true ] && [ "$subsection" = "global" ]; then
+      if [ "$in_list" = true ] && [ "$section" = "global" ]; then
         # List item under global (e.g., copy_files or protected_branches)
-        case "${section}.global.${list_type}" in
-          "worktree.global.copy_files")
+        case "$list_type" in
+          "copy_files")
             CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
             ;;
-          "protection.global.protected_branches")
+          "protected_branches")
             CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
             ;;
         esac
@@ -299,8 +414,8 @@ parse_yaml_config() {
       continue
     fi
 
-    # Level 4: Properties within project items (e.g., "      name: value")
-    if [[ "$line" =~ ^[[:space:]]{6}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+    # 4-space indent, key:value: Project properties (e.g., "    base_dir: ~/custom")
+    if [[ "$line" =~ ^[[:space:]]{4}([a-z_]+):[[:space:]]*(.*)$ ]]; then
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
@@ -310,31 +425,50 @@ parse_yaml_config() {
       fi
 
       if [ "$in_project_item" = true ]; then
-        if [ "$key" = "name" ]; then
-          current_project_name="$value"
-        elif [ -z "$value" ]; then
-          # It's a list header under project (e.g., "      copy_files:")
+        if [ -z "$value" ]; then
+          # It's a list header under project (e.g., "    copy_files:")
           in_list=true
           list_type="$key"
         else
-          # It's a direct value under project
-          current_project_data="$value"
+          # It's a direct value under project (base_dir, open_with, auto_prune)
+          case "$key" in
+            "base_dir")
+              current_base_dir="$value"
+              ;;
+            "open_with")
+              current_open_with="$value"
+              ;;
+            "auto_prune")
+              current_auto_prune="$value"
+              ;;
+          esac
         fi
       fi
       continue
     fi
 
-    # Level 5: List items under project properties (e.g., "        - .editorconfig")
-    if [[ "$line" =~ ^[[:space:]]{8}-[[:space:]]*(.*)$ ]]; then
+    # 6-space indent, dash: List items under project properties (e.g., "      - .editorconfig")
+    if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
       local item="${BASH_REMATCH[1]}"
 
       if [ "$in_project_item" = true ] && [ "$in_list" = true ]; then
         # Add to project's list (comma-separated)
-        if [ -z "$current_project_list" ]; then
-          current_project_list="$item"
-        else
-          current_project_list="$current_project_list,$item"
-        fi
+        case "$list_type" in
+          "copy_files")
+            if [ -z "$current_copy_files" ]; then
+              current_copy_files="$item"
+            else
+              current_copy_files="$current_copy_files,$item"
+            fi
+            ;;
+          "protected_branches")
+            if [ -z "$current_protected_branches" ]; then
+              current_protected_branches="$item"
+            else
+              current_protected_branches="$current_protected_branches,$item"
+            fi
+            ;;
+        esac
       fi
       continue
     fi
@@ -356,39 +490,38 @@ parse_yaml_config() {
 # Helper function to save accumulated project data
 save_project_data() {
   if [ "$in_project_item" = true ] && [ -n "$current_project_name" ]; then
-    # Determine which configuration variable to update based on section
-    case "$section" in
-      worktree)
-        if [ -n "$current_project_data" ]; then
-          # Save base_dir
-          CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        if [ -n "$current_project_list" ]; then
-          # Save copy_files list
-          CONFIG_WORKTREE_PROJECTS_COPY_FILES="$CONFIG_WORKTREE_PROJECTS_COPY_FILES ${current_project_name}:${current_project_list}"
-        fi
-        ;;
-      defaults)
-        if [ -n "$current_project_data" ]; then
-          CONFIG_DEFAULTS_PROJECTS="$CONFIG_DEFAULTS_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        ;;
-      protection)
-        if [ -n "$current_project_list" ]; then
-          CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_project_list}"
-        fi
-        ;;
-      remove)
-        if [ -n "$current_project_data" ]; then
-          CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_project_data}"
-        fi
-        ;;
-    esac
+    # Save base_dir if present
+    if [ -n "$current_base_dir" ]; then
+      CONFIG_WORKTREE_PROJECTS="$CONFIG_WORKTREE_PROJECTS ${current_project_name}:${current_base_dir}"
+    fi
+
+    # Save copy_files list if present
+    if [ -n "$current_copy_files" ]; then
+      CONFIG_WORKTREE_PROJECTS_COPY_FILES="$CONFIG_WORKTREE_PROJECTS_COPY_FILES ${current_project_name}:${current_copy_files}"
+    fi
+
+    # Save open_with if present
+    if [ -n "$current_open_with" ]; then
+      CONFIG_DEFAULTS_PROJECTS="$CONFIG_DEFAULTS_PROJECTS ${current_project_name}:${current_open_with}"
+    fi
+
+    # Save protected_branches if present
+    if [ -n "$current_protected_branches" ]; then
+      CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_protected_branches}"
+    fi
+
+    # Save auto_prune if present
+    if [ -n "$current_auto_prune" ]; then
+      CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_auto_prune}"
+    fi
 
     # Reset for next project
     current_project_name=""
-    current_project_data=""
-    current_project_list=""
+    current_base_dir=""
+    current_open_with=""
+    current_auto_prune=""
+    current_copy_files=""
+    current_protected_branches=""
     in_list=false
   fi
   in_project_item=false
@@ -396,36 +529,8 @@ save_project_data() {
 
 # Validate configuration values (bash 3.2 compatible)
 validate_configuration() {
-  # Validate defaults.global.open_with
-  if [ -n "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" ]; then
-    case "$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH" in
-      idea|code|iterm|warp|finder)
-        ;;  # Valid
-      *)
-        echo "⚠️  Warning: Invalid defaults.global.open_with value '$CONFIG_DEFAULTS_GLOBAL_OPEN_WITH' in config"
-        echo "   Valid options: idea, code, iterm, warp, finder"
-        echo "   Falling back to default: idea"
-        CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="idea"
-        ;;
-    esac
-  fi
-
-  # Validate project-specific open_with values
-  for entry in $CONFIG_DEFAULTS_PROJECTS; do
-    local proj_name="${entry%%:*}"
-    local open_with="${entry#*:}"
-    case "$open_with" in
-      idea|code|iterm|warp|finder)
-        ;;  # Valid
-      *)
-        echo "⚠️  Warning: Invalid open_with value '$open_with' for project '$proj_name'"
-        echo "   Valid options: idea, code, iterm, warp, finder"
-        echo "   This project will use global setting"
-        # Remove invalid entry
-        CONFIG_DEFAULTS_PROJECTS="${CONFIG_DEFAULTS_PROJECTS//${entry}/}"
-        ;;
-    esac
-  done
+  # No validation needed for open_with - any command name is accepted
+  # Validation happens at runtime when attempting to open
 
   # Validate worktree.global.base_dir exists or can be created
   if [ -n "$CONFIG_WORKTREE_GLOBAL_BASE_DIR" ]; then
@@ -531,7 +636,7 @@ get_config() {
   fi
 
   case "$key" in
-    # Worktree base_dir: project-specific → global → hardcoded default
+    # base_dir setting: project-specific → global → auto-detect
     worktree.base_dir)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -555,32 +660,42 @@ get_config() {
       echo "$default"
       ;;
 
-    # Worktree copy_files: project-specific → global → hardcoded default
+    # copy_files setting: project-specific ADDS TO global (additive behavior)
     worktree.copy_files)
-      # 1. Check project-specific setting
+      local result=""
+
+      # 1. Start with global setting
+      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
+        result="$CONFIG_WORKTREE_GLOBAL_COPY_FILES"
+      fi
+
+      # 2. Add project-specific files (if any)
       if [ -n "$project" ]; then
         for entry in $CONFIG_WORKTREE_PROJECTS_COPY_FILES; do
           local proj_name="${entry%%:*}"
           local proj_files="${entry#*:}"
           if [ "$proj_name" = "$project" ]; then
-            # Convert comma-separated to space-separated
-            echo "${proj_files//,/ }"
-            return
+            # Convert comma-separated to space-separated and append
+            local proj_files_space="${proj_files//,/ }"
+            if [ -n "$result" ]; then
+              result="$result $proj_files_space"
+            else
+              result="$proj_files_space"
+            fi
+            break
           fi
         done
       fi
 
-      # 2. Use global setting
-      if [ -n "$CONFIG_WORKTREE_GLOBAL_COPY_FILES" ]; then
-        echo "$CONFIG_WORKTREE_GLOBAL_COPY_FILES"
-        return
+      # 3. Return combined result or default
+      if [ -n "$result" ]; then
+        echo "$result"
+      else
+        echo "$default"
       fi
-
-      # 3. Use hardcoded default (empty)
-      echo "$default"
       ;;
 
-    # Defaults open_with: project-specific → global → hardcoded default
+    # open_with setting: project-specific → global → none (no automatic opening)
     defaults.open_with)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -604,32 +719,44 @@ get_config() {
       echo "$default"
       ;;
 
-    # Protection protected_branches: project-specific → global → hardcoded default
+    # protected_branches setting: project-specific ADDS TO global (additive behavior)
+    # Note: main and master are always included as base protection
     protection.protected_branches)
-      # 1. Check project-specific setting
+      local result="main master"  # Always start with main and master
+
+      # 1. Add global branches
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
+        # Global config already includes main/master from initialization
+        # Extract only the additional branches (skip main/master to avoid duplicates)
+        for branch in $CONFIG_PROTECTION_GLOBAL_BRANCHES; do
+          if [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+            result="$result $branch"
+          fi
+        done
+      fi
+
+      # 2. Add project-specific branches (if any)
       if [ -n "$project" ]; then
         for entry in $CONFIG_PROTECTION_PROJECTS; do
           local proj_name="${entry%%:*}"
           local proj_branches="${entry#*:}"
           if [ "$proj_name" = "$project" ]; then
-            # Convert comma-separated to space-separated, always include main/master
-            echo "main master ${proj_branches//,/ }"
-            return
+            # Convert comma-separated to space-separated and append
+            result="$result ${proj_branches//,/ }"
+            break
           fi
         done
       fi
 
-      # 2. Use global setting (always include main/master)
-      if [ -n "$CONFIG_PROTECTION_GLOBAL_BRANCHES" ]; then
-        echo "$CONFIG_PROTECTION_GLOBAL_BRANCHES"
-        return
+      # 3. Return combined result (or default if somehow empty)
+      if [ -n "$result" ]; then
+        echo "$result"
+      else
+        echo "$default"
       fi
-
-      # 3. Use hardcoded default (main master are always protected)
-      echo "$default"
       ;;
 
-    # Remove auto_prune: project-specific → global → hardcoded default
+    # auto_prune setting: project-specific → global → hardcoded default
     remove.auto_prune)
       # 1. Check project-specific setting
       if [ -n "$project" ]; then
@@ -727,7 +854,7 @@ copy_configured_files() {
 
 cmd_add() {
   # Load default from config
-  local OPEN_APP=$(get_config "defaults.open_with" "idea")
+  local OPEN_APP=$(get_config "defaults.open_with" "")
 
   # Function to show usage for add command
   show_add_usage() {
@@ -740,8 +867,8 @@ cmd_add() {
     echo "          Will check if this matches any PR title and use that PR's branch"
     echo "  [branch-name]: Optional, specific branch name (defaults to <name>)"
     echo "                 Will check if this matches any PR title and use that PR's branch"
-    echo "  --open <app>: Optional, specify where to open (default: idea)"
-    echo "                Available apps: idea, code, iterm, warp, finder"
+    echo "  --open <app>: Optional, specify where to open (default: none)"
+    echo "                Use any command/application that accepts a directory path"
     echo ""
     echo "PR Detection:"
     echo "  - PR Number: If <name> is numeric (e.g., 7113), directly checkouts that PR"
@@ -759,7 +886,7 @@ cmd_add() {
     echo "  git-turnouts add JIRA-123                     # Checks for PR with JIRA-123"
     echo "  git-turnouts add \"Exact PR Title\"             # Exact title match"
     echo "  git-turnouts add folder-name branch-name      # Different names"
-    echo "  git-turnouts add feature-x --open code        # Opens in VS Code"
+    echo "  git-turnouts add feature-x --open <editor>    # Opens in specified editor"
   }
 
   if [ -z "$1" ]; then
@@ -909,16 +1036,8 @@ cmd_add() {
     fi
   fi
 
-  # Validate open app option
-  case "$OPEN_APP" in
-    idea|code|iterm|warp|finder)
-      ;;
-    *)
-      echo "❌ Error: Invalid app '$OPEN_APP'"
-      echo "Valid options: idea, code, iterm, warp, finder"
-      exit 1
-      ;;
-  esac
+  # No validation needed for OPEN_APP - any command is accepted
+  # The command will be validated at runtime when we try to execute it
 
   # Get the main worktree path
   local MAIN_WORKTREE=$(get_main_worktree)
@@ -993,43 +1112,140 @@ cmd_add() {
   # Copy configured files
   copy_configured_files "$MAIN_WORKTREE" "$TARGET_DIR"
 
-  # Open in specified application
-  case "$OPEN_APP" in
-    idea)
-      echo "🧠 Opening in IntelliJ IDEA..."
-      idea "$TARGET_DIR"
-      ;;
-    code)
-      echo "📝 Opening in VS Code..."
-      code "$TARGET_DIR"
-      ;;
-    iterm)
-      echo "🖥️  Opening in iTerm..."
-      # Escape single quotes in path to prevent command injection
-      # Replaces ' with '\'' which closes the string, adds an escaped quote, and reopens the string
-      local ESCAPED_PATH
-      ESCAPED_PATH=$(printf '%s' "$TARGET_DIR" | sed "s/'/'\\\\''/g")
-      osascript -e "tell application \"iTerm\"
-        create window with default profile
-        tell current session of current window
-          write text \"cd '$ESCAPED_PATH'\"
-        end tell
-      end tell"
-      ;;
-    warp)
-      echo "🚀 Opening in Warp..."
-      open -a Warp "$TARGET_DIR"
-      ;;
-    finder)
-      echo "📂 Opening in Finder..."
-      open "$TARGET_DIR"
-      ;;
-  esac
+  # Open in specified application (if configured)
+  if [ -n "$OPEN_APP" ]; then
+    echo "🚀 Opening with '$OPEN_APP'..."
+
+    # Generic handling: try multiple approaches to support various tools
+    local opened=false
+
+    # Approach 1: Try direct execution (works for most CLI tools)
+    if command -v "$OPEN_APP" >/dev/null 2>&1; then
+      if "$OPEN_APP" "$TARGET_DIR" >/dev/null 2>&1 & then
+        echo "✅ Opened with $OPEN_APP"
+        opened=true
+      fi
+    fi
+
+    # Approach 2: Try with 'open -a' for macOS applications (works for GUI apps)
+    if [ "$opened" = false ] && command -v open >/dev/null 2>&1; then
+      if open -a "$OPEN_APP" "$TARGET_DIR" 2>/dev/null; then
+        echo "✅ Opened with $OPEN_APP"
+        opened=true
+      fi
+    fi
+
+    # Show helpful error if all approaches failed
+    if [ "$opened" = false ]; then
+      echo "⚠️  Warning: Could not open with '$OPEN_APP'"
+      echo ""
+      echo "   Troubleshooting:"
+      if ! command -v "$OPEN_APP" >/dev/null 2>&1; then
+        echo "   • Command '$OPEN_APP' not found in PATH"
+        echo "   • Make sure it's installed and accessible"
+      else
+        echo "   • The command exists but may not accept directory paths"
+      fi
+      echo ""
+      echo "   Solutions:"
+      echo "   • For CLI tools: Ensure the command accepts a directory path argument"
+      echo "   • For macOS apps: The app name should match the application name exactly"
+      echo "   • For special cases: Create a wrapper script (e.g., ~/bin/my-opener)"
+      echo ""
+      echo "   Example wrapper script for custom behavior:"
+      echo "   #!/bin/bash"
+      echo "   # Save as ~/bin/my-opener and make executable"
+      echo "   # Add your custom logic here to open \$1 (the directory path)"
+    fi
+  else
+    # Show helpful tip when no app is opened
+    echo ""
+    echo "💡 Tip: To automatically open worktrees, use --open <app> or configure open_with in .config.yml"
+    echo "   Set in global section or per-project. Use any command that accepts a directory path"
+  fi
 }
 
 # ============================================================================
 # REMOVE COMMAND - Remove worktrees
 # ============================================================================
+
+# Function to remove a single worktree
+# This is a shared function used by both remove and verify commands
+remove_worktree() {
+  local WORKTREE_NAME="$1"
+
+  # Get all worktrees and find the one matching the given name
+  local WORKTREE_PATH=""
+  local BRANCH_NAME=""
+  while IFS= read -r line; do
+    # Extract the branch name from brackets
+    if [[ "$line" =~ \[([^\]]+)\] ]]; then
+      local BRANCH="${BASH_REMATCH[1]}"
+      if [ "$BRANCH" = "$WORKTREE_NAME" ]; then
+        # Extract the path (first whitespace-separated token)
+        WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
+        BRANCH_NAME="$BRANCH"
+        break
+      fi
+    fi
+  done < <(git worktree list)
+
+  if [ -z "$WORKTREE_PATH" ]; then
+    echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME' - skipping"
+    return 1
+  fi
+
+  echo "Found worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
+
+  if [ ! -d "$WORKTREE_PATH" ]; then
+    echo "⚠️  Warning: Worktree path '$WORKTREE_PATH' does not exist - skipping"
+    return 1
+  fi
+
+  echo "Removing worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
+
+  # Check for uncommitted changes
+  cd "$WORKTREE_PATH" || {
+    echo "⚠️  Warning: Cannot access worktree directory"
+    return 1
+  }
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "⚠️  Warning: Worktree has uncommitted changes"
+    echo -n "   Continue with removal? [y/N] "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy] ]]; then
+      echo "   Skipped removal of '$WORKTREE_NAME'"
+      cd - > /dev/null
+      return 1
+    fi
+  fi
+  cd - > /dev/null
+
+  # Check if this is a protected branch to avoid removing it
+  if is_protected_branch "$BRANCH_NAME"; then
+    echo "🛡️  Error: Cannot remove protected branch '$BRANCH_NAME'"
+    echo "   Protected branches are configured to prevent accidental removal"
+    echo "   To remove this worktree, first remove '$BRANCH_NAME' from protected_branches in .config.yml"
+    return 1
+  fi
+
+  if git worktree remove --force "$WORKTREE_PATH"; then
+    echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
+
+    # Now remove the branch
+    echo "🗑️  Deleting branch '$BRANCH_NAME'..."
+    if git branch -D "$BRANCH_NAME" 2>/dev/null; then
+      echo "✅ Branch '$BRANCH_NAME' deleted successfully"
+    else
+      echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
+    fi
+
+    return 0
+  else
+    echo "❌ Failed to remove worktree '$WORKTREE_NAME'"
+    return 1
+  fi
+}
 
 cmd_remove() {
   show_remove_usage() {
@@ -1047,77 +1263,6 @@ cmd_remove() {
     show_remove_usage
     exit 1
   fi
-
-  # Function to remove a single worktree
-  remove_worktree() {
-    local WORKTREE_NAME="$1"
-
-    # Get all worktrees and find the one matching the given name
-    local WORKTREE_PATH=""
-    local BRANCH_NAME=""
-    while IFS= read -r line; do
-      # Extract the branch name from brackets
-      if [[ "$line" =~ \[([^\]]+)\] ]]; then
-        local BRANCH="${BASH_REMATCH[1]}"
-        if [ "$BRANCH" = "$WORKTREE_NAME" ]; then
-          # Extract the path (first whitespace-separated token)
-          WORKTREE_PATH=$(echo "$line" | awk '{print $1}')
-          BRANCH_NAME="$BRANCH"
-          break
-        fi
-      fi
-    done < <(git worktree list)
-
-    if [ -z "$WORKTREE_PATH" ]; then
-      echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME' - skipping"
-      return 1
-    fi
-
-    echo "Found worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
-
-    if [ ! -d "$WORKTREE_PATH" ]; then
-      echo "⚠️  Warning: Worktree path '$WORKTREE_PATH' does not exist - skipping"
-      return 1
-    fi
-
-    echo "Removing worktree '$WORKTREE_NAME' at: $WORKTREE_PATH"
-
-    # Check if this is a protected branch to avoid deleting it
-    local DEFAULT_BRANCH
-    DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
-
-    # Get protected branches (project-specific → global → default: main master)
-    local protected_branches=$(get_config "protection.protected_branches" "main master")
-
-    # Check against configured protected branches (space-separated list)
-    local SKIP_BRANCH_DELETE=false
-    for protected in $protected_branches $DEFAULT_BRANCH; do
-      if [ "$BRANCH_NAME" = "$protected" ]; then
-        echo "⚠️  Warning: Cannot delete protected branch '$BRANCH_NAME' - removing worktree only"
-        SKIP_BRANCH_DELETE=true
-        break
-      fi
-    done
-
-    if git worktree remove --force "$WORKTREE_PATH"; then
-      echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
-
-      # Now remove the branch if it's safe to do so
-      if [ "$SKIP_BRANCH_DELETE" = false ]; then
-        echo "🗑️  Deleting branch '$BRANCH_NAME'..."
-        if git branch -D "$BRANCH_NAME" 2>/dev/null; then
-          echo "✅ Branch '$BRANCH_NAME' deleted successfully"
-        else
-          echo "⚠️  Warning: Could not delete branch '$BRANCH_NAME' (it may not exist locally or be already deleted)"
-        fi
-      fi
-
-      return 0
-    else
-      echo "❌ Failed to remove worktree '$WORKTREE_NAME'"
-      return 1
-    fi
-  }
 
   # Track success/failure
   local TOTAL=0
@@ -1190,6 +1335,218 @@ cmd_list() {
 }
 
 # ============================================================================
+# VERIFY COMMAND
+# ============================================================================
+
+show_verify_usage() {
+  cat << 'EOF'
+Usage: git-turnouts verify [options]
+
+Verify worktrees against remote branches and optionally clean up stale ones.
+
+OPTIONS:
+    --clean, -c       Remove worktrees with deleted remote branches
+    --dry-run, -n     Preview what would be removed (implies --clean)
+    --yes, -y         Skip confirmation prompt
+    --verbose, -v     Show detailed status for each worktree
+    --help, -h        Show this help message
+
+EXAMPLES:
+    git-turnouts verify                    # Check only (safe)
+    git-turnouts verify --verbose          # Detailed output
+    git-turnouts verify --clean --dry-run  # Preview cleanup
+    git-turnouts verify --clean            # Clean with confirmation
+    git-turnouts verify --clean --yes      # Clean without confirmation
+
+EOF
+}
+
+handle_verify_cleanup() {
+  local dry_run="$1"
+  local force_yes="$2"
+
+  echo ""
+
+  # Show protected branches that will be skipped
+  local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
+  if [ $protected_stale_count -gt 0 ]; then
+    echo "🛡️  Protected branches (will be skipped):"
+    for branch in $WORKTREES_PROTECTED_STALE; do
+      # Extract path for this branch
+      local path=""
+      for entry in $WORKTREE_PATHS; do
+        if [[ "$entry" == "$branch:"* ]]; then
+          path="${entry#*:}"
+          break
+        fi
+      done
+      echo "   • $branch"
+      echo "     Path: $path"
+      echo "     Status: Remote deleted but branch is protected"
+    done
+    echo ""
+  fi
+
+  # Show non-protected stale worktrees
+  local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
+  if [ $stale_count -eq 0 ]; then
+    echo "✨ No stale worktrees to remove"
+    return 0
+  fi
+
+  echo "🗑️  Worktrees to remove:"
+
+  # Show detailed list with warnings
+  for branch in $WORKTREES_WITHOUT_REMOTE; do
+    # Extract path for this branch
+    local path=""
+    for entry in $WORKTREE_PATHS; do
+      if [[ "$entry" == "$branch:"* ]]; then
+        path="${entry#*:}"
+        break
+      fi
+    done
+
+    echo "   • $branch"
+    echo "     Path: $path"
+
+    # Check for unpushed commits
+    if check_unpushed_commits "$branch"; then
+      echo "     ⚠️  WARNING: Has $UNPUSHED_COMMIT_COUNT unpushed commit(s)"
+    fi
+  done
+
+  echo ""
+
+  # Dry-run mode
+  if [ "$dry_run" = "true" ]; then
+    echo "🔍 DRY-RUN: No changes will be made"
+    echo "   Run without --dry-run to actually remove"
+    return 0
+  fi
+
+  # Determine if confirmation needed (always ask unless --yes flag)
+  local need_confirmation=true
+  if [ "$force_yes" = "true" ]; then
+    need_confirmation=false
+  fi
+
+  # Ask for confirmation
+  if [ "$need_confirmation" = "true" ]; then
+    echo -n "Remove these worktrees? [y/N] "
+    read -r response
+    if [[ ! "$response" =~ ^[Yy] ]]; then
+      echo "❌ Cleanup cancelled"
+      return 1
+    fi
+  fi
+
+  # Remove worktrees
+  echo ""
+  echo "🗑️  Removing stale worktrees..."
+
+  # Use existing remove_worktree function
+  for branch in $WORKTREES_WITHOUT_REMOTE; do
+    remove_worktree "$branch"
+  done
+
+  # Auto-prune
+  local auto_prune=$(get_config "remove.auto_prune" "true")
+  if [ "$auto_prune" = "true" ]; then
+    echo ""
+    echo "🔧 Pruning stale references..."
+    git worktree prune
+  fi
+
+  echo ""
+  echo "✅ Cleanup complete!"
+}
+
+cmd_verify() {
+  # Parse flags
+  local CLEAN_MODE=false
+  local DRY_RUN=false
+  local FORCE_YES=false
+  local VERBOSE=false
+
+  for arg in "$@"; do
+    case "$arg" in
+      --clean|-c)
+        CLEAN_MODE=true
+        ;;
+      --dry-run|-n)
+        DRY_RUN=true
+        CLEAN_MODE=true  # Implied
+        ;;
+      --yes|-y)
+        FORCE_YES=true
+        ;;
+      --verbose|-v)
+        VERBOSE=true
+        ;;
+      --help|-h)
+        show_verify_usage
+        exit 0
+        ;;
+      *)
+        echo "❌ Error: Unknown option '$arg'"
+        show_verify_usage
+        exit 1
+        ;;
+    esac
+  done
+
+  # Step 1: Update remote references (always enabled)
+  echo "🔄 Updating remote references..."
+  if git fetch origin --prune --quiet 2>/dev/null; then
+    echo "✅ Remote references updated"
+  else
+    echo "⚠️  Warning: Failed to fetch remote (continuing with cached data)"
+  fi
+  echo ""
+
+  # Step 2: Analyze worktrees
+  echo "🔍 Checking worktrees against remote..."
+  echo ""
+
+  analyze_worktrees_remote_status "$VERBOSE"
+
+  # Step 3: Display results
+  local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
+  local active_count=$(echo "$WORKTREES_WITH_REMOTE" | wc -w | tr -d ' ')
+  local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
+
+  # Always show summary
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "📊 Summary:"
+  echo "   ✅ Active: $active_count"
+  echo "   ❌ Stale: $stale_count"
+  if [ $protected_stale_count -gt 0 ]; then
+    echo "   🛡️  Protected (stale): $protected_stale_count"
+  fi
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # Step 4: Handle cleanup or show status message
+  if [ "$CLEAN_MODE" = "true" ] && [ $stale_count -gt 0 ]; then
+    handle_verify_cleanup "$DRY_RUN" "$FORCE_YES"
+  elif [ "$CLEAN_MODE" = "true" ] && [ $stale_count -eq 0 ] && [ $protected_stale_count -gt 0 ]; then
+    echo ""
+    echo "✨ All stale worktrees are protected - nothing to remove!"
+  elif [ $stale_count -eq 0 ] && [ $protected_stale_count -eq 0 ]; then
+    echo ""
+    echo "✨ All worktrees are up to date!"
+  elif [ $stale_count -gt 0 ]; then
+    echo ""
+    echo "💡 Found $stale_count stale worktree(s) with deleted remote branches."
+    echo "   Run 'git-turnouts verify --clean' to remove them."
+    if [ $protected_stale_count -gt 0 ]; then
+      echo "   Note: $protected_stale_count protected branch(es) will be skipped."
+    fi
+  fi
+}
+
+# ============================================================================
 # HELP & VERSION
 # ============================================================================
 
@@ -1216,6 +1573,14 @@ COMMANDS:
     ls
         List all worktrees
 
+    verify [options]
+        Check worktrees against remote branches
+        Options:
+          --clean, -c      Remove worktrees with deleted remote branches (respects protected branches)
+          --dry-run, -n    Preview what would be removed
+          --yes, -y        Skip confirmation prompt
+          --verbose, -v    Show detailed status including protection status
+
     help
     --help
     -h
@@ -1226,7 +1591,7 @@ COMMANDS:
     -v
         Show version information
 
-    config [show|init]
+    config [show|init|check]
         Manage configuration
 
 CONFIGURATION:
@@ -1236,22 +1601,26 @@ CONFIGURATION:
     git-turnouts config init
         Create .config.yml from .config.yml.example
 
+    git-turnouts config check [--verbose] [--required] [--optional]
+        Check tool dependencies and show status
+
     Configuration file: .config.yml
     Example template:   .config.yml.example
 
     See .config.yml.example for all available options:
-    - worktree.base_dir: Custom worktree location
-    - worktree.copy_files: Files to copy to new worktrees
-    - defaults.open_with: Default IDE (idea, code, iterm, warp, finder)
-    - protection.protected_branches: Branches that cannot be deleted
-    - remove.auto_prune: Auto-run git worktree prune after removing
+    - global.base_dir: Custom worktree location
+    - global.copy_files: Files to copy to new worktrees
+    - global.open_with: Default IDE/editor command (any command that accepts paths)
+    - global.protected_branches: Branches that cannot be deleted
+    - global.auto_prune: Auto-run git worktree prune after removing
+    - projects[].open_with: Per-project overrides (and other settings)
 
 EXAMPLES:
     # Create worktree from PR number
     git-turnouts add 7113
 
-    # Create worktree and open in VS Code
-    git-turnouts add feature-x --open code
+    # Create worktree and open in your editor
+    git-turnouts add feature-x --open <editor>
 
     # Search for PR by title
     git-turnouts add "Add authentication"
@@ -1262,6 +1631,18 @@ EXAMPLES:
 
     # List all worktrees
     git-turnouts list
+
+    # Verify worktrees against remote
+    git-turnouts verify
+    git-turnouts verify --verbose
+
+    # Clean up stale worktrees
+    git-turnouts verify --clean --dry-run
+    git-turnouts verify --clean
+
+    # Check tool dependencies
+    git-turnouts config check
+    git-turnouts config check --verbose
 
 For more information, visit:
 https://github.com/andr3van/git-turnouts
@@ -1434,8 +1815,12 @@ cmd_config() {
         echo "    Project: (using global setting)"
       fi
 
-      local effective_open=$(get_config "defaults.open_with" "idea")
-      echo "    → Effective: $effective_open"
+      local effective_open=$(get_config "defaults.open_with" "")
+      if [ -n "$effective_open" ]; then
+        echo "    → Effective: $effective_open"
+      else
+        echo "    → Effective: (none - worktrees will not open automatically)"
+      fi
 
       # ========== PROTECTION CONFIGURATION ==========
       echo ""
@@ -1526,23 +1911,315 @@ cmd_config() {
       echo ""
       echo "   vim $config_file"
       ;;
+    check)
+      shift  # Remove 'check' from arguments
+      cmd_config_check "$@"
+      ;;
     *)
-      echo "Usage: git-turnouts config [show|init]"
+      echo "Usage: git-turnouts config [show|init|check]"
       echo ""
       echo "Commands:"
       echo "  show    Show current configuration (default)"
       echo "  init    Create .config.yml from .config.yml.example"
+      echo "  check   Check tool dependencies and show status"
       echo ""
       echo "Examples:"
       echo "  git-turnouts config show"
       echo "  git-turnouts config init"
+      echo "  git-turnouts config check"
       ;;
   esac
+}
+
+# Helper function to print tool status for config check command
+print_tool_status() {
+  local tool="$1"
+  local verbose="$2"
+
+  if [ "$TOOL_INSTALLED" = true ]; then
+    if [ "$verbose" = true ]; then
+      printf "  ✅  %-13s %-22s\n" "$tool" "$TOOL_VERSION"
+      printf "      Path: %s\n" "$TOOL_PATH"
+      printf "      Purpose: %s\n" "$(get_tool_purpose "$tool")"
+    else
+      printf "  ✅  %-13s %-22s %s\n" "$tool" "$TOOL_VERSION" "$(get_tool_purpose "$tool")"
+    fi
+  else
+    if [ "$verbose" = true ]; then
+      printf "  ❌  %-13s %-22s\n" "$tool" "Not installed"
+      printf "      Purpose: %s\n" "$(get_tool_purpose "$tool")"
+      get_tool_install_instructions "$tool"
+    else
+      printf "  ❌  %-13s %-22s %s\n" "$tool" "Not installed" "$(get_tool_purpose "$tool")"
+    fi
+  fi
+}
+
+# Show usage for config check command
+show_config_check_usage() {
+  cat << 'EOF'
+Usage: git-turnouts config check [options]
+
+Check status of required and optional tool dependencies.
+
+OPTIONS:
+    --verbose, -v     Show detailed information (paths, purposes)
+    --required, -r    Show only required tools
+    --optional, -o    Show only optional tools
+    --help, -h        Show this help message
+
+EXAMPLES:
+    git-turnouts config check              # Check all tools
+    git-turnouts config check --verbose    # Detailed output
+    git-turnouts config check --required   # Only required tools
+    git-turnouts config check --optional   # Only optional tools
+
+REQUIRED TOOLS:
+    git          Version control and worktree management (requires 2.5+)
+    bash         Script execution (requires 3.2+)
+    jq           JSON parsing for GitHub PR integration
+
+OPTIONAL TOOLS:
+    gh           GitHub Pull Request integration
+    fzf          Interactive branch selection (future feature)
+    yq           Advanced YAML configuration parsing (future feature)
+    shellcheck   Shell script linting for development
+
+EOF
+}
+
+# Config check subcommand - check tool dependencies
+cmd_config_check() {
+  # Parse flags
+  local VERBOSE=false
+  local REQUIRED_ONLY=false
+  local OPTIONAL_ONLY=false
+
+  for arg in "$@"; do
+    case "$arg" in
+      --verbose|-v)
+        VERBOSE=true
+        ;;
+      --required|-r)
+        REQUIRED_ONLY=true
+        ;;
+      --optional|-o)
+        OPTIONAL_ONLY=true
+        ;;
+      --help|-h)
+        show_config_check_usage
+        exit 0
+        ;;
+      *)
+        echo "❌ Error: Unknown option '$arg'"
+        show_config_check_usage
+        exit 1
+        ;;
+    esac
+  done
+
+  # Cannot use both filters
+  if [ "$REQUIRED_ONLY" = true ] && [ "$OPTIONAL_ONLY" = true ]; then
+    echo "❌ Error: Cannot use both --required and --optional"
+    exit 1
+  fi
+
+  # Define tool lists
+  local required_tools="git bash jq"
+  local optional_tools="gh shellcheck"
+
+  # Header
+  echo "📋 Tool Dependency Status"
+  echo ""
+
+  # Check required tools
+  local required_missing=0
+  if [ "$OPTIONAL_ONLY" = false ]; then
+    echo "Required Tools:"
+    if [ "$VERBOSE" = true ]; then
+      printf "      %-13s %-22s\n" "Tool" "Version"
+      echo "  ─────────────────────────────────────────────────"
+    else
+      printf "      %-13s %-22s %s\n" "Tool" "Version" "Purpose"
+      echo "  ─────────────────────────────────────────────────────────────────────────────────────"
+    fi
+    for tool in $required_tools; do
+      get_tool_info "$tool"
+      print_tool_status "$tool" "$VERBOSE"
+      if [ "$TOOL_INSTALLED" = false ]; then
+        required_missing=$((required_missing + 1))
+      fi
+    done
+    echo ""
+  fi
+
+  # Check optional tools
+  if [ "$REQUIRED_ONLY" = false ]; then
+    echo "Optional Tools:"
+    if [ "$VERBOSE" = true ]; then
+      printf "      %-13s %-22s\n" "Tool" "Version"
+      echo "  ─────────────────────────────────────────────────"
+    else
+      printf "      %-13s %-22s %s\n" "Tool" "Version" "Purpose"
+      echo "  ─────────────────────────────────────────────────────────────────────────────────────"
+    fi
+    for tool in $optional_tools; do
+      get_tool_info "$tool"
+      print_tool_status "$tool" "$VERBOSE"
+    done
+    echo ""
+  fi
+
+  # Summary
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  if [ "$REQUIRED_ONLY" = false ]; then
+    if [ $required_missing -eq 0 ]; then
+      echo "Status: All required tools are installed ✅"
+    else
+      echo "Status: Missing $required_missing required tool(s) ❌"
+      echo ""
+      echo "Run the installation commands above to fix missing dependencies."
+      exit 1
+    fi
+  else
+    echo "Status: Check complete"
+  fi
 }
 
 # ============================================================================
 # DEPENDENCY CHECKS
 # ============================================================================
+
+# Helper function to get version string for a tool
+get_tool_version() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      git --version 2>/dev/null | sed 's/git version //' | awk '{print $1}'
+      ;;
+    jq)
+      jq --version 2>/dev/null | sed 's/jq-//'
+      ;;
+    gh)
+      gh --version 2>/dev/null | head -1 | sed 's/gh version //' | awk '{print $1}'
+      ;;
+    bash)
+      bash --version 2>/dev/null | head -1 | sed 's/.*version //' | awk '{print $1}'
+      ;;
+    fzf)
+      fzf --version 2>/dev/null | awk '{print $1}'
+      ;;
+    yq)
+      yq --version 2>/dev/null | awk '{print $NF}'
+      ;;
+    shellcheck)
+      shellcheck --version 2>/dev/null | grep '^version:' | awk '{print $2}'
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
+}
+
+# Helper function to get full path to a tool
+get_tool_path() {
+  local tool="$1"
+  command -v "$tool" 2>/dev/null || echo ""
+}
+
+# Helper function to check if a tool is installed
+check_tool_installed() {
+  local tool="$1"
+  command -v "$tool" >/dev/null 2>&1
+}
+
+# Helper function to get all info about a tool
+# Sets global variables: TOOL_INSTALLED, TOOL_VERSION, TOOL_PATH
+get_tool_info() {
+  local tool="$1"
+
+  if check_tool_installed "$tool"; then
+    TOOL_INSTALLED="true"
+    TOOL_VERSION=$(get_tool_version "$tool")
+    TOOL_PATH=$(get_tool_path "$tool")
+  else
+    TOOL_INSTALLED="false"
+    TOOL_VERSION=""
+    TOOL_PATH=""
+  fi
+}
+
+# Helper function to get human-readable description of a tool
+get_tool_purpose() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      echo "Version control and worktree management"
+      ;;
+    jq)
+      echo "JSON parsing for GitHub PR integration"
+      ;;
+    bash)
+      echo "Script execution (requires 3.2+)"
+      ;;
+    gh)
+      echo "GitHub Pull Request integration"
+      ;;
+    fzf)
+      echo "Interactive branch selection (future feature)"
+      ;;
+    yq)
+      echo "Advanced YAML configuration parsing (future feature)"
+      ;;
+    shellcheck)
+      echo "Shell script linting for development"
+      ;;
+    *)
+      echo "Unknown tool"
+      ;;
+  esac
+}
+
+# Helper function to get installation instructions for a tool
+get_tool_install_instructions() {
+  local tool="$1"
+  case "$tool" in
+    git)
+      echo "  Install: https://git-scm.com/downloads"
+      echo "  macOS:   brew install git"
+      echo "  Linux:   apt-get install git or yum install git"
+      ;;
+    jq)
+      echo "  Install: https://jqlang.github.io/jq/download/"
+      echo "  macOS:   brew install jq"
+      echo "  Linux:   apt-get install jq or yum install jq"
+      ;;
+    gh)
+      echo "  Install: https://cli.github.com/"
+      echo "  macOS:   brew install gh"
+      echo "  Linux:   See https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
+      ;;
+    fzf)
+      echo "  Install: https://github.com/junegunn/fzf#installation"
+      echo "  macOS:   brew install fzf"
+      ;;
+    yq)
+      echo "  Install: https://github.com/mikefarah/yq#install"
+      echo "  macOS:   brew install yq"
+      ;;
+    shellcheck)
+      echo "  Install: https://github.com/koalaman/shellcheck#installing"
+      echo "  macOS:   brew install shellcheck"
+      ;;
+    bash)
+      echo "  Update:  Your bash version should work, but for the latest:"
+      echo "  macOS:   brew install bash"
+      ;;
+    *)
+      echo "  No installation instructions available"
+      ;;
+  esac
+}
 
 check_dependencies() {
   local missing=""
@@ -1622,6 +2299,9 @@ case "$COMMAND" in
     ;;
   list|ls)
     cmd_list "$@"
+    ;;
+  verify)
+    cmd_verify "$@"
     ;;
   config)
     cmd_config "$@"

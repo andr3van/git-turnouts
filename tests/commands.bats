@@ -79,6 +79,12 @@ teardown() {
   assert_output_contains "Usage"
 }
 
+@test "config check command exists" {
+  run_git_turnouts config check
+  assert_success
+  assert_output_contains "Tool Dependency Status"
+}
+
 @test "add command without arguments shows usage" {
   run_git_turnouts add
   assert_failure
