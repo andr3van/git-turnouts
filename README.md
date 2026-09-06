@@ -215,6 +215,9 @@ git-turnouts remove feature-branch
 # Remove multiple worktrees (bulk operation)
 git-turnouts remove feature-1 feature-2 feature-3
 
+# Force remove a protected branch (soft-protected)
+git-turnouts remove --force protected-branch
+
 # Short alias
 git-turnouts rm feature-branch
 ```
@@ -248,6 +251,9 @@ git-turnouts verify --clean
 
 # Clean up without confirmation
 git-turnouts verify --clean --yes
+
+# Clean up including protected stale worktrees and stale config entries
+git-turnouts verify --clean --force
 ```
 
 The `verify` command helps you:
@@ -256,7 +262,7 @@ The `verify` command helps you:
 - Keep your workspace organized and up-to-date
 - Warn about unpushed commits before removal
 - Check for uncommitted changes
-- Respect protected branches (completely skip removal for protected worktrees)
+- Respect protected branches (skip removal for protected worktrees unless `--force` is used)
 - Show protection status in verbose mode with 🛡️ indicator
 
 **Protected Branches in Verify:**
@@ -266,8 +272,12 @@ The `verify` command clearly indicates protected branches in verbose mode:
 
 When cleaning up stale worktrees with `verify --clean`:
 - Protected branches are shown in a separate "Protected branches (will be skipped)" section
-- Completely skip removal (both worktree and branch are preserved)
+- Skip removal by default (both worktree and branch are preserved)
+- Use `--force` to include soft-protected branches and stale configuration entries in the cleanup
 - Include protected stale branches in the "Protected (stale)" count in the summary
+
+**Hard-Protected Branches:**
+Branches like `main` and `master` (and the repository's default branch) are **hard-protected**. They can NEVER be removed by `git-turnouts`, even if the `--force` flag is used. This provides a baseline safety net for your most critical tracks.
 
 This ensures important branches like `develop` or `staging` are never accidentally removed and are always clearly identified in the output.
 

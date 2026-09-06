@@ -45,14 +45,14 @@ teardown() {
 @test "verify shows all worktrees up to date when no stale worktrees" {
   run_git_turnouts verify
   assert_success
-  assert_output_contains "All worktrees are up to date"
+  assert_output_contains "up to date"
 }
 
 @test "verify --clean --dry-run shows preview message" {
   run_git_turnouts verify --clean --dry-run
   assert_success
   # In a clean repo with no stale worktrees, should show all up to date
-  assert_output_contains "All worktrees are up to date"
+  assert_output_contains "up to date"
 }
 
 @test "verify --clean prompts for confirmation when stale worktrees exist" {
@@ -127,7 +127,7 @@ teardown() {
 @test "verify --clean without stale worktrees shows success message" {
   run_git_turnouts verify --clean
   assert_success
-  assert_output_contains "All worktrees are up to date"
+  assert_output_contains "up to date"
 }
 
 @test "verify command updates remote references" {

@@ -179,21 +179,43 @@ check_unpushed_commits() {
   fi
 }
 
-# Check if a branch is protected
+# Check if a branch is hard-protected (main, master, or repository default)
+# These branches can NEVER be removed, even with --force
 # Arguments: $1 = branch name
-# Returns: 0 (true) if protected, 1 (false) if not protected
-is_protected_branch() {
+# Returns: 0 (true) if hard-protected, 1 (false) if not
+is_hard_protected_branch() {
   local branch="$1"
 
   # Get default branch
   local default_branch
   default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
-  # Get protected branches (project-specific → global → default: main master)
-  local protected_branches=$(get_config "protection.protected_branches" "main master")
+  # Hard-protected branches: main, master, and the repository's default branch
+  for protected in "main" "master" "$default_branch"; do
+    if [ "$branch" = "$protected" ]; then
+      return 0  # Hard-protected
+    fi
+  done
+
+  return 1  # Not hard-protected
+}
+
+# Check if a branch is protected (either hard-protected or user-configured)
+# Arguments: $1 = branch name
+# Returns: 0 (true) if protected, 1 (false) if not protected
+is_protected_branch() {
+  local branch="$1"
+
+  # Always include hard-protected branches
+  if is_hard_protected_branch "$branch"; then
+    return 0
+  fi
+
+  # Get configured protected branches (project-specific → global → default: empty)
+  local protected_branches=$(get_config "protection.protected_branches" "")
 
   # Check against configured protected branches
-  for protected in $protected_branches $default_branch; do
+  for protected in $protected_branches; do
     if [ "$branch" = "$protected" ]; then
       return 0  # Protected
     fi
@@ -274,6 +296,50 @@ analyze_worktrees_remote_status() {
   WORKTREES_WITHOUT_REMOTE="${WORKTREES_WITHOUT_REMOTE## }"
   WORKTREES_PROTECTED_STALE="${WORKTREES_PROTECTED_STALE## }"
   WORKTREE_PATHS="${WORKTREE_PATHS## }"
+}
+
+# Check for stale entries in the project-specific configuration
+# A stale entry is a protected branch that no longer exists locally or on origin
+# Arguments: $1 = project name
+# Sets global: STALE_CONFIG_ENTRIES
+check_stale_config_entries() {
+  local project="$1"
+  STALE_CONFIG_ENTRIES=""
+
+  if [ -z "$project" ]; then
+    return 0
+  fi
+
+  # Get project-specific protected branches (skip global to avoid cross-project side effects)
+  local protected_branches=""
+  for entry in $CONFIG_PROTECTION_PROJECTS; do
+    if [[ "$entry" == "$project:"* ]]; then
+      protected_branches="${entry#*:}"
+      # Convert comma-separated to space-separated
+      protected_branches="${protected_branches//,/ }"
+      break
+    fi
+  done
+  
+  if [ -z "$protected_branches" ]; then
+    return 0
+  fi
+
+  for branch in $protected_branches; do
+    # Skip hard-protected branches (they are always relevant)
+    if is_hard_protected_branch "$branch"; then
+      continue
+    fi
+
+    # Check if branch exists locally or on remote
+    if ! git rev-parse --verify "$branch" >/dev/null 2>&1 && \
+       ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+      STALE_CONFIG_ENTRIES="$STALE_CONFIG_ENTRIES $branch"
+    fi
+  done
+
+  # Trim leading spaces
+  STALE_CONFIG_ENTRIES="${STALE_CONFIG_ENTRIES## }"
 }
 
 # ============================================================================
@@ -799,6 +865,79 @@ get_config() {
   esac
 }
 
+# Remove a branch from the configuration file
+# Arguments: $1 = branch name, $2 = project name (optional)
+remove_from_config() {
+  local branch="$1"
+  local project="${2:-}"
+
+  # Get the config file path
+  local script_path="${BASH_SOURCE[0]}"
+  while [ -L "$script_path" ]; do
+    local link_target=$(readlink "$script_path")
+    if [[ "$link_target" == /* ]]; then
+      script_path="$link_target"
+    else
+      script_path="$(dirname "$script_path")/$link_target"
+    fi
+  done
+  local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+  local config_file="${GIT_TURNOUTS_CONFIG:-$script_dir/.config.yml}"
+
+  if [ ! -f "$config_file" ]; then
+    return 1
+  fi
+
+  # Determine sed -i flag based on OS
+  local sed_i_flag=("-i")
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed_i_flag=("-i" "")
+  fi
+
+  if [ -n "$project" ]; then
+    # Project-specific removal
+    # 1. Find the start line of the project entry
+    local start_line=$(grep -n "^  - name: $project" "$config_file" | head -n 1 | cut -d: -f1)
+    if [ -z "$start_line" ]; then
+      start_line=$(grep -n "^- name: $project" "$config_file" | head -n 1 | cut -d: -f1)
+    fi
+    
+    if [ -z "$start_line" ]; then
+      return 1
+    fi
+    
+    # 2. Find the end line of the project entry (next "- name:" or column 0 header)
+    local end_line=$(tail -n +$((start_line + 1)) "$config_file" | grep -n -E "^  - name:|^[a-z_]+:" | head -n 1 | cut -d: -f1)
+    if [ -n "$end_line" ]; then
+        end_line=$((start_line + end_line - 1))
+    else
+        end_line=$(wc -l < "$config_file")
+    fi
+
+    # Remove the branch within that range
+    # Indentation for project list items is 6 spaces
+    sed "${sed_i_flag[@]}" "${start_line},${end_line}{/^[[:space:]]*-[[:space:]]*${branch}$/d;}" "$config_file"
+    echo "✨ Removed '$branch' from protected_branches in project '$project'"
+  else
+    # Global removal
+    local start_line=$(grep -n "^global:" "$config_file" | head -n 1 | cut -d: -f1)
+    if [ -z "$start_line" ]; then
+      return 1
+    fi
+
+    local end_line=$(tail -n +$((start_line + 1)) "$config_file" | grep -n -E "^[a-z_]+:" | head -n 1 | cut -d: -f1)
+    if [ -n "$end_line" ]; then
+        end_line=$((start_line + end_line - 1))
+    else
+        end_line=$(wc -l < "$config_file")
+    fi
+
+    # Indentation for global list items is 4 spaces
+    sed "${sed_i_flag[@]}" "${start_line},${end_line}{/^[[:space:]]*-[[:space:]]*${branch}$/d;}" "$config_file"
+    echo "✨ Removed '$branch' from global protected_branches"
+  fi
+}
+
 # Copy configured files from main worktree to new worktree (bash 3.2 compatible)
 copy_configured_files() {
   local source_dir="$1"    # Main worktree path
@@ -1171,8 +1310,10 @@ cmd_add() {
 
 # Function to remove a single worktree
 # This is a shared function used by both remove and verify commands
+# Arguments: $1 = worktree name, $2 = force (true/false)
 remove_worktree() {
   local WORKTREE_NAME="$1"
+  local FORCE="${2:-false}"
 
   # Get all worktrees and find the one matching the given name
   local WORKTREE_PATH=""
@@ -1191,7 +1332,33 @@ remove_worktree() {
   done < <(git worktree list)
 
   if [ -z "$WORKTREE_PATH" ]; then
-    echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME' - skipping"
+    echo "⚠️  Warning: No worktree found with name '$WORKTREE_NAME'"
+    
+    # If force is enabled, check if this branch is in the project configuration
+    # and remove it if it exists there as a stale entry.
+    if [ "$FORCE" = "true" ]; then
+      local current_project=$(get_project_name 2>/dev/null || echo "")
+      if [ -n "$current_project" ]; then
+        # Check if it is in the configuration specifically for this project
+        local project_protected=""
+        for entry in $CONFIG_PROTECTION_PROJECTS; do
+          if [[ "$entry" == "$current_project:"* ]]; then
+            project_protected="${entry#*:}"
+            project_protected="${project_protected//,/ }"
+            break
+          fi
+        done
+        
+        for protected in $project_protected; do
+          if [ "$WORKTREE_NAME" = "$protected" ]; then
+            echo "🛡️  Found '$WORKTREE_NAME' in protected_branches for project '$current_project' (orphaned entry)"
+            remove_from_config "$WORKTREE_NAME" "$current_project"
+            return 0
+          fi
+        done
+      fi
+    fi
+    
     return 1
   fi
 
@@ -1221,16 +1388,33 @@ remove_worktree() {
   fi
   cd - > /dev/null
 
-  # Check if this is a protected branch to avoid removing it
-  if is_protected_branch "$BRANCH_NAME"; then
+  # Check if this is a hard-protected branch to avoid removing it (never allowed)
+  if is_hard_protected_branch "$BRANCH_NAME"; then
+    echo "🛡️  Error: Cannot remove hard-protected branch '$BRANCH_NAME'"
+    echo "   Critical branches (main, master, and default) are absolutely protected"
+    return 1
+  fi
+
+  # Check if this is a protected branch (only allowed if force is set)
+  if is_protected_branch "$BRANCH_NAME" && [ "$FORCE" != "true" ]; then
     echo "🛡️  Error: Cannot remove protected branch '$BRANCH_NAME'"
     echo "   Protected branches are configured to prevent accidental removal"
-    echo "   To remove this worktree, first remove '$BRANCH_NAME' from protected_branches in .config.yml"
+    echo "   To remove this worktree, use --force/-f or remove '$BRANCH_NAME' from protected_branches in .config.yml"
     return 1
   fi
 
   if git worktree remove --force "$WORKTREE_PATH"; then
     echo "✅ Worktree '$WORKTREE_NAME' removed successfully"
+
+    # If this was a protected branch (and we are here because of --force),
+    # remove it from the configuration file to keep it in sync
+    if is_protected_branch "$BRANCH_NAME"; then
+      # Only remove from project-specific config to be safe
+      local current_project=$(get_project_name 2>/dev/null || echo "")
+      if [ -n "$current_project" ]; then
+        remove_from_config "$BRANCH_NAME" "$current_project"
+      fi
+    fi
 
     # Now remove the branch
     echo "🗑️  Deleting branch '$BRANCH_NAME'..."
@@ -1249,17 +1433,46 @@ remove_worktree() {
 
 cmd_remove() {
   show_remove_usage() {
-    echo "Usage: git-turnouts remove <worktree-name> [worktree-name2 ...]"
-    echo "       git-turnouts rm <worktree-name> [worktree-name2 ...]"
+    echo "Usage: git-turnouts remove [options] <worktree-name> [worktree-name2 ...]"
+    echo "       git-turnouts rm [options] <worktree-name> [worktree-name2 ...]"
+    echo ""
+    echo "Options:"
+    echo "  -f, --force    Force removal of protected branches (except main/master)"
     echo ""
     echo "Remove one or more worktrees by their branch name."
     echo ""
     echo "Examples:"
     echo "  git-turnouts remove feature-branch"
+    echo "  git-turnouts rm -f protected-branch"
     echo "  git-turnouts rm test1 test2 feature-branch"
   }
 
   if [ $# -eq 0 ]; then
+    show_remove_usage
+    exit 1
+  fi
+
+  local FORCE="false"
+  local ARGS=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -f|--force)
+        FORCE="true"
+        shift
+        ;;
+      -h|--help)
+        show_remove_usage
+        exit 0
+        ;;
+      *)
+        ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [ ${#ARGS[@]} -eq 0 ]; then
     show_remove_usage
     exit 1
   fi
@@ -1270,23 +1483,23 @@ cmd_remove() {
   local FAILED=0
 
   # Show appropriate message based on number of worktrees
-  if [ $# -eq 1 ]; then
-    echo "🗑️  Removing worktree '$1'..."
+  if [ ${#ARGS[@]} -eq 1 ]; then
+    echo "🗑️  Removing worktree '${ARGS[0]}'..."
   else
     echo "🗑️  Starting bulk worktree removal..."
   fi
   echo
 
   # Process each worktree name
-  for WORKTREE_NAME in "$@"; do
+  for WORKTREE_NAME in "${ARGS[@]}"; do
     TOTAL=$((TOTAL + 1))
 
     # Show progress counter only for multiple worktrees
-    if [ $# -gt 1 ]; then
-      echo "[$TOTAL/$#] Processing '$WORKTREE_NAME'..."
+    if [ ${#ARGS[@]} -gt 1 ]; then
+      echo "[$TOTAL/${#ARGS[@]}] Processing '$WORKTREE_NAME'..."
     fi
 
-    if remove_worktree "$WORKTREE_NAME"; then
+    if remove_worktree "$WORKTREE_NAME" "$FORCE"; then
       REMOVED=$((REMOVED + 1))
     else
       FAILED=$((FAILED + 1))
@@ -1346,6 +1559,7 @@ Verify worktrees against remote branches and optionally clean up stale ones.
 
 OPTIONS:
     --clean, -c       Remove worktrees with deleted remote branches
+    --force, -f       Include protected branches in cleanup (except main/master)
     --dry-run, -n     Preview what would be removed (implies --clean)
     --yes, -y         Skip confirmation prompt
     --verbose, -v     Show detailed status for each worktree
@@ -1356,6 +1570,7 @@ EXAMPLES:
     git-turnouts verify --verbose          # Detailed output
     git-turnouts verify --clean --dry-run  # Preview cleanup
     git-turnouts verify --clean            # Clean with confirmation
+    git-turnouts verify --clean --force    # Clean including protected ones
     git-turnouts verify --clean --yes      # Clean without confirmation
 
 EOF
@@ -1364,14 +1579,86 @@ EOF
 handle_verify_cleanup() {
   local dry_run="$1"
   local force_yes="$2"
+  local force_removal="${3:-false}"
 
   echo ""
 
-  # Show protected branches that will be skipped
+  # Show protected branches that will be skipped or included
   local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
+  local to_remove_protected=""
+  local skipped_protected=""
+
   if [ $protected_stale_count -gt 0 ]; then
-    echo "🛡️  Protected branches (will be skipped):"
     for branch in $WORKTREES_PROTECTED_STALE; do
+      if [ "$force_removal" = "true" ] && ! is_hard_protected_branch "$branch"; then
+        to_remove_protected="$to_remove_protected $branch"
+      else
+        skipped_protected="$skipped_protected $branch"
+      fi
+    done
+
+    # Trim spaces
+    to_remove_protected="${to_remove_protected## }"
+    skipped_protected="${skipped_protected## }"
+
+    if [ -n "$skipped_protected" ]; then
+      echo "🛡️  Protected branches (will be skipped):"
+      for branch in $skipped_protected; do
+        # Extract path for this branch
+        local path=""
+        for entry in $WORKTREE_PATHS; do
+          if [[ "$entry" == "$branch:"* ]]; then
+            path="${entry#*:}"
+            break
+          fi
+        done
+        echo "   • $branch"
+        echo "     Path: $path"
+        if is_hard_protected_branch "$branch"; then
+          echo "     Status: Hard-protected (cannot be removed)"
+        else
+          echo "     Status: Remote deleted but branch is protected (use --force to remove)"
+        fi
+      done
+      echo ""
+    fi
+  fi
+
+  # Show stale configuration entries
+  local stale_config_count=$(echo "$STALE_CONFIG_ENTRIES" | wc -w | tr -d ' ')
+  if [ $stale_config_count -gt 0 ]; then
+    if [ "$force_removal" = "true" ]; then
+      echo "⚙️  Stale configuration entries to remove:"
+      for branch in $STALE_CONFIG_ENTRIES; do
+        echo "   • $branch (missing locally and on remote)"
+      done
+      echo ""
+    else
+      echo "🛡️  Stale configuration entries (will be skipped):"
+      for branch in $STALE_CONFIG_ENTRIES; do
+        echo "   • $branch"
+        echo "     Status: Missing locally and on remote (use --force to remove from config)"
+      done
+      echo ""
+    fi
+  fi
+
+  # Show non-protected stale worktrees + force-included protected ones
+  local stale_list="$WORKTREES_WITHOUT_REMOTE $to_remove_protected"
+  stale_list="${stale_list## }"
+  stale_list="${stale_list%% }"
+
+  local stale_count=$(echo "$stale_list" | wc -w | tr -d ' ')
+  if [ $stale_count -eq 0 ] && [ $stale_config_count -eq 0 ]; then
+    echo "✨ No stale worktrees or configuration entries to remove"
+    return 0
+  fi
+
+  if [ $stale_count -gt 0 ]; then
+    echo "🗑️  Worktrees to remove:"
+    
+    # Show detailed list with warnings
+    for branch in $stale_list; do
       # Extract path for this branch
       local path=""
       for entry in $WORKTREE_PATHS; do
@@ -1380,43 +1667,22 @@ handle_verify_cleanup() {
           break
         fi
       done
-      echo "   • $branch"
+
+      local protected_msg=""
+      if is_protected_branch "$branch"; then
+        protected_msg=" (PROTECTED)"
+      fi
+
+      echo "   • ${branch}${protected_msg}"
       echo "     Path: $path"
-      echo "     Status: Remote deleted but branch is protected"
+
+      # Check for unpushed commits
+      if check_unpushed_commits "$branch"; then
+        echo "     ⚠️  WARNING: Has $UNPUSHED_COMMIT_COUNT unpushed commit(s)"
+      fi
     done
     echo ""
   fi
-
-  # Show non-protected stale worktrees
-  local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
-  if [ $stale_count -eq 0 ]; then
-    echo "✨ No stale worktrees to remove"
-    return 0
-  fi
-
-  echo "🗑️  Worktrees to remove:"
-
-  # Show detailed list with warnings
-  for branch in $WORKTREES_WITHOUT_REMOTE; do
-    # Extract path for this branch
-    local path=""
-    for entry in $WORKTREE_PATHS; do
-      if [[ "$entry" == "$branch:"* ]]; then
-        path="${entry#*:}"
-        break
-      fi
-    done
-
-    echo "   • $branch"
-    echo "     Path: $path"
-
-    # Check for unpushed commits
-    if check_unpushed_commits "$branch"; then
-      echo "     ⚠️  WARNING: Has $UNPUSHED_COMMIT_COUNT unpushed commit(s)"
-    fi
-  done
-
-  echo ""
 
   # Dry-run mode
   if [ "$dry_run" = "true" ]; then
@@ -1433,7 +1699,11 @@ handle_verify_cleanup() {
 
   # Ask for confirmation
   if [ "$need_confirmation" = "true" ]; then
-    echo -n "Remove these worktrees? [y/N] "
+    local confirm_msg="Remove these worktrees?"
+    if [ "$stale_config_count" -gt 0 ] && [ "$force_removal" = "true" ]; then
+      confirm_msg="Remove these worktrees and stale config entries?"
+    fi
+    echo -n "$confirm_msg [y/N] "
     read -r response
     if [[ ! "$response" =~ ^[Yy] ]]; then
       echo "❌ Cleanup cancelled"
@@ -1442,13 +1712,27 @@ handle_verify_cleanup() {
   fi
 
   # Remove worktrees
-  echo ""
-  echo "🗑️  Removing stale worktrees..."
+  if [ $stale_count -gt 0 ]; then
+    echo ""
+    echo "🗑️  Removing stale worktrees..."
 
-  # Use existing remove_worktree function
-  for branch in $WORKTREES_WITHOUT_REMOTE; do
-    remove_worktree "$branch"
-  done
+    # Use existing remove_worktree function
+    for branch in $stale_list; do
+      remove_worktree "$branch" "$force_removal"
+    done
+  fi
+
+  # Clean up stale config entries
+  if [ "$force_removal" = "true" ] && [ $stale_config_count -gt 0 ]; then
+    echo ""
+    echo "⚙️  Cleaning up stale configuration entries..."
+    local current_project=$(get_project_name 2>/dev/null || echo "")
+    if [ -n "$current_project" ]; then
+      for branch in $STALE_CONFIG_ENTRIES; do
+        remove_from_config "$branch" "$current_project"
+      done
+    fi
+  fi
 
   # Auto-prune
   local auto_prune=$(get_config "remove.auto_prune" "true")
@@ -1467,12 +1751,16 @@ cmd_verify() {
   local CLEAN_MODE=false
   local DRY_RUN=false
   local FORCE_YES=false
+  local FORCE_REMOVAL=false
   local VERBOSE=false
 
   for arg in "$@"; do
     case "$arg" in
       --clean|-c)
         CLEAN_MODE=true
+        ;;
+      --force|-f)
+        FORCE_REMOVAL=true
         ;;
       --dry-run|-n)
         DRY_RUN=true
@@ -1511,7 +1799,12 @@ cmd_verify() {
 
   analyze_worktrees_remote_status "$VERBOSE"
 
-  # Step 3: Display results
+  # Step 3: Check for stale configuration entries
+  local current_project=$(get_project_name 2>/dev/null || echo "")
+  check_stale_config_entries "$current_project"
+  local stale_config_count=$(echo "$STALE_CONFIG_ENTRIES" | wc -w | tr -d ' ')
+
+  # Step 4: Display results
   local stale_count=$(echo "$WORKTREES_WITHOUT_REMOTE" | wc -w | tr -d ' ')
   local active_count=$(echo "$WORKTREES_WITH_REMOTE" | wc -w | tr -d ' ')
   local protected_stale_count=$(echo "$WORKTREES_PROTECTED_STALE" | wc -w | tr -d ' ')
@@ -1525,23 +1818,32 @@ cmd_verify() {
   if [ $protected_stale_count -gt 0 ]; then
     echo "   🛡️  Protected (stale): $protected_stale_count"
   fi
+  if [ $stale_config_count -gt 0 ]; then
+    echo "   ⚙️  Stale Config: $stale_config_count"
+  fi
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-  # Step 4: Handle cleanup or show status message
-  if [ "$CLEAN_MODE" = "true" ] && [ $stale_count -gt 0 ]; then
-    handle_verify_cleanup "$DRY_RUN" "$FORCE_YES"
-  elif [ "$CLEAN_MODE" = "true" ] && [ $stale_count -eq 0 ] && [ $protected_stale_count -gt 0 ]; then
+  # Step 5: Handle cleanup or show status message
+  if [ "$CLEAN_MODE" = "true" ] && ([ $stale_count -gt 0 ] || ([ $protected_stale_count -gt 0 ] && [ "$FORCE_REMOVAL" = "true" ]) || ([ $stale_config_count -gt 0 ] && [ "$FORCE_REMOVAL" = "true" ])); then
+    handle_verify_cleanup "$DRY_RUN" "$FORCE_YES" "$FORCE_REMOVAL"
+  elif [ "$CLEAN_MODE" = "true" ] && [ $stale_count -eq 0 ] && ([ $protected_stale_count -gt 0 ] || [ $stale_config_count -gt 0 ]) && [ "$FORCE_REMOVAL" = "false" ]; then
     echo ""
-    echo "✨ All stale worktrees are protected - nothing to remove!"
-  elif [ $stale_count -eq 0 ] && [ $protected_stale_count -eq 0 ]; then
+    echo "✨ All stale worktrees are protected or entries are in config - nothing to remove!"
+    echo "   Use --force to remove protected worktrees and stale config entries."
+  elif [ $stale_count -eq 0 ] && [ $protected_stale_count -eq 0 ] && [ $stale_config_count -eq 0 ]; then
     echo ""
-    echo "✨ All worktrees are up to date!"
-  elif [ $stale_count -gt 0 ]; then
+    echo "✨ All worktrees and configuration are up to date!"
+  elif [ $stale_count -gt 0 ] || [ $stale_config_count -gt 0 ]; then
     echo ""
-    echo "💡 Found $stale_count stale worktree(s) with deleted remote branches."
-    echo "   Run 'git-turnouts verify --clean' to remove them."
-    if [ $protected_stale_count -gt 0 ]; then
-      echo "   Note: $protected_stale_count protected branch(es) will be skipped."
+    if [ $stale_count -gt 0 ]; then
+      echo "💡 Found $stale_count stale worktree(s) with deleted remote branches."
+    fi
+    if [ $stale_config_count -gt 0 ]; then
+      echo "💡 Found $stale_config_count stale entries in project '$current_project' configuration."
+    fi
+    echo "   Run 'git-turnouts verify --clean' to remove stale worktrees."
+    if [ $stale_config_count -gt 0 ] || [ $protected_stale_count -gt 0 ]; then
+      echo "   Note: Use --force to also clean up protected worktrees and stale config entries."
     fi
   fi
 }
@@ -1565,9 +1867,9 @@ COMMANDS:
     add <name> [branch] [--open <app>]
         Create a new worktree with optional PR integration
 
-    remove <name> [name2 ...]
-    rm <name> [name2 ...]
-        Remove one or more worktrees
+    remove [options] <name> [name2 ...]
+    rm [options] <name> [name2 ...]
+        Remove one or more worktrees (use -f, --force for protected)
 
     list
     ls
@@ -1576,7 +1878,8 @@ COMMANDS:
     verify [options]
         Check worktrees against remote branches
         Options:
-          --clean, -c      Remove worktrees with deleted remote branches (respects protected branches)
+          --clean, -c      Remove worktrees with deleted remote branches
+          --force, -f      Include protected branches in cleanup (except main/master)
           --dry-run, -n    Preview what would be removed
           --yes, -y        Skip confirmation prompt
           --verbose, -v    Show detailed status including protection status
@@ -1628,6 +1931,7 @@ EXAMPLES:
     # Remove worktrees
     git-turnouts remove feature-x
     git-turnouts rm feat-1 feat-2 feat-3
+    git-turnouts rm --force protected-branch
 
     # List all worktrees
     git-turnouts list
@@ -1639,6 +1943,7 @@ EXAMPLES:
     # Clean up stale worktrees
     git-turnouts verify --clean --dry-run
     git-turnouts verify --clean
+    git-turnouts verify --clean --force
 
     # Check tool dependencies
     git-turnouts config check
