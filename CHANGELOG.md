@@ -5,6 +5,22 @@ All notable changes to Git Turnouts will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-06
+
+### Added
+- **Force-Deletion Support**: Added `--force` / `-f` flag to `remove` and `verify` commands to bypass user-configured protection.
+- **Hard-Protection Enforcement**: Critical branches (`main`, `master`, and default) are now hard-protected and cannot be deleted even with the `--force` flag.
+- **Automatic Configuration Cleanup**: `remove --force` and `verify --clean --force` now automatically remove stale entries from the project's `protected_branches` in `.config.yml`.
+- **Project-Aware Isolation**: Configuration cleanup is scoped to the current project, preventing accidental removal of protected branches in other projects sharing the same config file.
+- **Enhanced Stale Entry Detection**: The `verify` command now detects and reports branches in the configuration that no longer exist locally or on remote.
+
+### Changed
+- Updated console `--help` output for `remove` and `verify` commands to include the new `--force` flag.
+- Enhanced `README.md` with details on soft vs. hard protection levels and new usage examples.
+
+### Testing
+- Added comprehensive test suite `tests/force_del.bats` covering force removal, hard protection, and stale config cleanup.
+
 ## [1.1.0] - 2026-03-10
 
 ### Added
@@ -136,6 +152,7 @@ local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 - File copying support for worktree setup
 - Comprehensive documentation and examples
 
+[1.2.0]: https://github.com/andr3van/git-turnouts/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/andr3van/git-turnouts/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/andr3van/git-turnouts/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/andr3van/git-turnouts/releases/tag/v1.0.0
