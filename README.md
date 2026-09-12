@@ -30,14 +30,12 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
 ## Requirements
 
 - **Unix-like OS** (macOS, Linux)
-- **Git** (2.5 or newer, with worktree support)
+- **Git** (2.5+)
 - **Bash** (3.2+)
-- **jq** (for JSON parsing) - [Install jq](https://jqlang.github.io/jq/download/)
-- **GitHub CLI (gh)** (optional, for PR integration features) - [Install gh](https://cli.github.com/)
+- **jq** (required for PR integration and config)
+- **GitHub CLI (gh)** (optional, for PR features)
 
-**Platform Notes:**
-- **Core features** (worktree management, PR integration): Fully supported on macOS and Linux
-- **Automatic opening** (`--open` flag): Optimized for macOS. On Linux, worktrees are created successfully and CLI tools in your PATH (like `code`) work, but automatic opening of GUI applications may require manual steps.
+Use `git-turnouts config check` to verify your environment.
 
 ## Installation
 
@@ -72,100 +70,14 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
 
 ## Checking Dependencies
 
-Git Turnouts can check which tools are installed and available on your system. This helps ensure all features work correctly and provides guidance for installing missing tools.
-
-### Basic Usage
+Verify your installation and get guidance for missing tools:
 
 ```bash
-# Check all tools (required and optional)
-git-turnouts config check
-
-# Show detailed information including paths and purposes
-git-turnouts config check --verbose
-
-# Check only required tools
-git-turnouts config check --required
-
-# Check only optional tools
-git-turnouts config check --optional
+git-turnouts config check [--verbose | --required | --optional]
 ```
 
-### Required Tools
-
-These tools are necessary for core git-turnouts functionality:
-
-- **git** (2.5+) - Version control and worktree operations
-- **bash** (3.2+) - Script execution
-- **jq** - JSON parsing for configuration and PR data
-
-### Optional Tools
-
-These tools enable additional features:
-
-- **gh** - GitHub CLI for PR integration features
-- **shellcheck** - Shell script linting for development
-
-### Example Output
-
-```bash
-$ git-turnouts config check
-
-📋 Tool Dependency Status
-
-Required Tools:
-      Tool          Version                Purpose
-  ─────────────────────────────────────────────────────────────────────────────────────
-  ✅  git           2.39.0                 Version control and worktree management
-  ✅  bash          3.2.57(1)-release      Script execution (requires 3.2+)
-  ✅  jq            1.6                    JSON parsing for GitHub PR integration
-
-Optional Tools:
-      Tool          Version                Purpose
-  ─────────────────────────────────────────────────────────────────────────────────────
-  ✅  gh            2.40.0                 GitHub Pull Request integration
-  ✅  shellcheck    0.9.0                  Shell script linting for development
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Status: All required tools are installed ✅
-```
-
-### Verbose Output
-
-Use `--verbose` to see full paths in addition to purposes:
-
-```bash
-$ git-turnouts config check --verbose
-
-📋 Tool Dependency Status
-
-Required Tools:
-      Tool          Version
-  ─────────────────────────────────────────────────
-  ✅  git           2.39.0
-      Path: /usr/bin/git
-      Purpose: Version control and worktree management
-  ✅  bash          3.2.57(1)-release
-      Path: /bin/bash
-      Purpose: Script execution (requires 3.2+)
-  ✅  jq            1.6
-      Path: /usr/local/bin/jq
-      Purpose: JSON parsing for GitHub PR integration
-```
-
-### Installing Missing Tools
-
-If any required tools are missing, you'll see installation guidance:
-
-```bash
-# macOS
-brew install jq gh
-
-# Linux (Debian/Ubuntu)
-sudo apt-get install jq gh
-
-# Linux (RHEL/CentOS)
-sudo yum install jq gh
-```
+**Required:** `git` (2.5+), `bash` (3.2+), `jq`.
+**Optional:** `gh` (GitHub PR integration), `shellcheck` (development).
 
 ## Usage
 
@@ -234,52 +146,24 @@ git-turnouts ls
 
 ### Verifying Worktrees
 
-Check if worktrees are still tracking active remote branches and clean up stale ones:
+Check for stale worktrees tracking deleted remote branches and clean them up:
 
 ```bash
-# Check all worktrees against remote (safe, read-only)
+# Preview stale worktrees (safe, read-only)
 git-turnouts verify
-
-# Show detailed status for each worktree
-git-turnouts verify --verbose
-
-# Preview what would be cleaned up (dry-run)
-git-turnouts verify --clean --dry-run
 
 # Clean up stale worktrees (with confirmation)
 git-turnouts verify --clean
 
-# Clean up without confirmation
-git-turnouts verify --clean --yes
-
-# Clean up including protected stale worktrees and stale config entries
+# Clean up including protected stale worktrees
 git-turnouts verify --clean --force
 ```
 
-The `verify` command helps you:
-- Identify worktrees whose remote branches have been deleted
-- Clean up stale worktrees after PRs are merged
-- Keep your workspace organized and up-to-date
-- Warn about unpushed commits before removal
-- Check for uncommitted changes
-- Respect protected branches (skip removal for protected worktrees unless `--force` is used)
-- Show protection status in verbose mode with 🛡️ indicator
-
-**Protected Branches in Verify:**
-The `verify` command clearly indicates protected branches in verbose mode:
-- **Active protected branches**: Shown as `✅ branch-name → origin/branch-name exists (PROTECTED)`
-- **Stale protected branches**: Shown as `🛡️ branch-name → branch deleted from remote (PROTECTED - will not be removed)`
-
-When cleaning up stale worktrees with `verify --clean`:
-- Protected branches are shown in a separate "Protected branches (will be skipped)" section
-- Skip removal by default (both worktree and branch are preserved)
-- Use `--force` to include soft-protected branches and stale configuration entries in the cleanup
-- Include protected stale branches in the "Protected (stale)" count in the summary
-
-**Hard-Protected Branches:**
-By default, `main`, `master`, and the repository's default branch are **hard-protected**. They can NEVER be removed by `git-turnouts`, even if the `--force` flag is used. This provides a baseline safety net for your most critical tracks.
-
-You can configure additional branches for absolute protection using the `hard_protected_branches` setting. This ensures important tracks like `production` or `stable` are never accidentally removed, even with the force flag. Soft-protected branches (configured via `protected_branches`) can still be removed if you explicitly use `--force`.
+**Key Features:**
+- Detects worktrees whose remote branches were deleted (e.g., after PR merge).
+- Respects **protected branches** (skips them unless `--force` is used).
+- Warns about unpushed commits or uncommitted changes.
+- Default **hard-protection** for `main`, `master`, and the repository's default branch ensures they are never removed.
 
 ## How It Works
 
@@ -298,22 +182,9 @@ Worktrees are organized in a clean hierarchy:
 
 ### PR Detection Flow
 
-1. **PR Number**: If input is numeric (e.g., `7113`), directly fetches that PR
-   - Checks PR state (open/closed/merged)
-   - **Merged PRs**: Blocks creation (branch likely deleted)
-   - **Closed PRs**: Allows creation with warning (branch may still exist)
-   - **Open PRs**: Proceeds normally
-   - Uses PR's branch name
-   - Fetches latest changes from remote
-
-2. **PR Title Search**: Searches open PRs for matching titles
-   - Prefers exact match first, falls back to partial match
-   - Use literal quotes (e.g., '"Title"') to force an exact match only
-   - Uses PR's branch if found
-
-3. **Standard Branch**: Falls back to normal Git branch resolution
-   - Checks for remote branch first
-   - Creates new branch from HEAD if needed
+1. **PR Number**: (e.g., `7113`) Fetches PR, blocks creation if merged.
+2. **PR Title**: Searches open PRs (exact then partial match). Use `' "Title" '` for forced exact match.
+3. **Standard Branch**: Falls back to Git branch resolution or creates a new one from HEAD.
 
 ### Safety Features
 
@@ -355,603 +226,102 @@ git-turnouts remove feature-1 feature-2 feature-3 pr-7113
 
 Git Turnouts uses a single YAML configuration file that manages all your projects. The configuration file lives in the git-turnouts installation directory.
 
-### Quick Start
+### Configuration Quick Start
 
-1. **Create your configuration file:**
-   ```bash
-   git-turnouts config init
-   ```
-   This creates `.config.yml` in the git-turnouts directory
+1. **Initialize:** `git-turnouts config init` (creates `.config.yml` in script directory)
+2. **View:** `git-turnouts config show`
+3. **Configure:** Edit `.config.yml` to set your preferences.
 
-2. **Edit your configuration:**
-   ```bash
-   # The init command shows you the path to edit
-   vim ~/.../git-turnouts/.config.yml
-   ```
+### Key Options
 
-3. **View your current configuration:**
-   ```bash
-   git-turnouts config show
-   ```
-   This shows the detected project name and effective settings
+- `base_dir`: Global or project-specific worktree location.
+- `hard_protected_branches`: Branches that can never be removed.
+- `protected_branches`: Branches that require `--force` to remove.
+- `open_with`: Command to automatically open new worktrees (e.g., `code`).
+- `auto_prune`: Automatically prune after removing worktrees (true/false).
+- `copy_files`: List of files to copy to new worktrees (e.g., `.env`).
 
-Your settings will be applied automatically across all projects!
-
-### Configuration Options
-
-See `.config.yml.example` for all available options with detailed comments. Here's a quick overview:
-
-#### Worktree Configuration
-
-```yaml
-# Global settings apply to all projects
-global:
-  # Base directory for all projects
-  # Project name is automatically added as a subdirectory
-  base_dir: ~/worktrees
-
-  # Files to copy from main worktree to new worktrees
-  copy_files:
-    - .editorconfig
-    - .env.example
-    - .nvmrc
-
-# Project-specific settings
-# List settings (copy_files, protected_branches, hard_protected_branches): COMBINE WITH global
-# Scalar settings (base_dir, open_with, auto_prune): OVERRIDE global
-# The 'name' must match your repository's directory name exactly
-projects:
-  - name: my-app
-    base_dir: ~/custom/my-app      # Overrides global base_dir
-    copy_files:                     # Combines with global copy_files
-      - .env.local                  # Combined: .editorconfig, .env.example, .nvmrc, .env.local
-  - name: another-project
-    base_dir: /tmp/another-project
-```
-
-**How it works:**
-1. Project name is detected from your repository's directory name (e.g., `/path/to/my-app` → project name is `my-app`)
-2. The project name is **always added as a subdirectory** for organization
-3. If a project-specific `base_dir` exists → use it: `{base_dir}/{project}/{branch}`
-4. Else if global `base_dir` exists → use it: `{base_dir}/{project}/{branch}`
-5. Else → auto-detect: `../worktree/{project}/{branch}`
-
-**Example:** With `global.base_dir: ~/worktrees` and project `my-app`:
-- Worktrees created at: `~/worktrees/my-app/feature-x`
+See `.config.yml.example` for a full reference.
 
 ---
 
 ### 💡 Pro Tip: Automatic File Copying
 
-The `copy_files` feature is one of Git Turnouts' most powerful workflow improvements. It automatically copies essential configuration files from your main worktree to every new worktree you create.
+The `copy_files` feature automatically copies essential files (like `.env`, `.editorconfig`) from your main repository to every new worktree.
 
-**The problem it solves:**
+**Why use it?**
+- **Instant Setup**: New worktrees are immediately ready to run.
+- **No Manual Copying**: Stop manually recreating `.env` files with local credentials.
+- **Consistency**: All worktrees use the same local configuration.
 
-Many files are **essential to run your application** but are **NOT in version control** (listed in `.gitignore`):
-- `.env` files containing personal API keys, credentials, or secrets
-- Local IDE settings or personalized configurations
-- Files with environment-specific values unique to your machine
-
-Without `copy_files`, you'd need to manually recreate or copy these files for **every single worktree** - a tedious and error-prone process.
-
-**Why this matters:**
-- **No manual setup** - Each worktree is instantly ready to work with
-- **Never forget essential files** - Stop worrying about missing `.env` files or credentials
-- **Consistency across worktrees** - All your worktrees use the same local configuration
-- **Save time** - Eliminate the tedious copy-paste routine for every new worktree
-
-**Common files to copy:**
-```yaml
-copy_files:
-  - .env                # Personal environment variables, API keys, secrets (NOT in git)
-  - .env.local          # Local development overrides (NOT in git)
-  - .editorconfig       # Editor settings (indentation, formatting)
-  - .nvmrc              # Node.js version for the project
-  - .ruby-version       # Ruby version manager
-  - .prettierrc         # Code formatting rules
-  - .eslintrc.js        # Linting configuration
-  - .idea/codeStyles/   # IDE code style settings
-```
-
-**Real-world example:**
+**Example:**
 ```yaml
 global:
-  base_dir: ~/worktrees
   copy_files:
-    - .env              # Contains your personal database credentials
-    - .env.local        # Your local API keys
+    - .env
+    - .env.local
     - .editorconfig
-    - .nvmrc
 ```
-
-When you run `git-turnouts add feature-auth`, it will:
-1. Create the worktree at `~/worktrees/my-app/feature-auth`
-2. Automatically copy `.env`, `.env.local`, `.editorconfig`, and `.nvmrc` to the new worktree
-3. Open in your IDE, ready to work immediately - **no manual file copying, no missing credentials**
-
-**Without copy_files:**
-Every time you create a worktree, you must:
-- Remember which files to copy
-- Manually copy `.env` file with your credentials
-- Set up local configurations again
-- Deal with "Cannot connect to database" errors when you forget
-
-**With copy_files:**
-Every worktree is automatically set up with all your personal configurations. Just run the app - it works immediately. 🚀
 
 ---
 
-### Configuration Examples
-
-#### Example 1: VS Code User
+### Configuration Reference
 
 ```yaml
 global:
-  open_with: code
-```
-
-#### Example 2: Global + Project-Specific Worktree Locations
-
-```yaml
-global:
-  # All projects go to ~/worktrees/{project-name} by default
-  # (project name is automatically added)
-  base_dir: ~/worktrees
-  copy_files:
-    - .editorconfig
-    - .env.example
-
-# But my-important-project goes to a specific location
-projects:
-  - name: my-important-project
-    base_dir: ~/critical
-```
-
-**Results:**
-- Most projects: `~/worktrees/my-app/branch-name`
-- my-important-project: `~/critical/my-important-project/branch-name`
-
-#### Example 3: Branch Protection (Soft and Hard)
-
-```yaml
-global:
-  # main, master, and default branch are hard-protected by default
-  # Add more branches that can NEVER be deleted (even with --force)
-  hard_protected_branches:
-    - production
-    - stable
-
-  # Soft protection: branches that cannot be deleted unless --force is used
-  protected_branches:
-    - develop
-    - staging
-    - hotfix
-```
-
-#### Example 4: Complete Configuration Reference
-
-```yaml
-global:
-  # Base directory for worktrees (project name is auto-added)
-  # Default: ../worktree (relative to repo)
-  base_dir: ~/worktrees
-
-  # Automatic opening when creating worktrees
-  # Use any command that accepts a directory path
-  # Default: none (worktrees will not open automatically)
-  open_with: code
-
-  # Auto-prune after removing worktrees
-  # Default: true
-  auto_prune: true
-
-  # Files to copy from main worktree to new worktrees
-  # Useful for .env files, IDE configs, etc.
-  # Default: none
-  copy_files:
-    - .editorconfig
-    - .env.local
-
-  # Branches whose worktrees and branches cannot be removed
-  # Applies to both 'remove' and 'verify --clean' commands
-  # Note: main, master are always protected even if not listed
-  # Default: main, master only
-  protected_branches:
-    - develop
-    - staging
-
-  # Branches that can NEVER be removed, even with --force
-  # Default: main, master, and default branch only
-  hard_protected_branches:
-    - production
+  base_dir: ~/worktrees           # Base directory for all projects
+  hard_protected_branches: [prod] # Cannot be removed even with --force
+  protected_branches: [develop]   # Require --force to remove
+  open_with: code                # Command to open worktrees (optional)
+  auto_prune: true               # Auto-prune after removing (default: true)
+  copy_files: [.env, .nvmrc]     # Files to copy to new worktrees
 
 projects:
-  # Project-specific settings override global settings
-  - name: critical-app
-    base_dir: ~/production
-    open_with: idea
-    protected_branches:
-      - develop
-      - staging
-      - production
-    hard_protected_branches:
-      - production
+  - name: my-app
+    base_dir: ~/custom/my-app      # Overrides global base_dir
+    copy_files: [.env.local]       # Combines with global copy_files
 ```
 
-**Results:**
-- Most projects: `~/worktrees/{project}/branch-name` (opens in VS Code)
-- critical-app: `~/production/critical-app/branch-name` (opens in IntelliJ IDEA, extra protected branches)
+**Hierarchy:**
+- **Scalar settings** (`base_dir`, `open_with`, `auto_prune`): Project overrides global.
+- **List settings** (`hard_protected_branches`, `protected_branches`, `copy_files`): Project combines with global (additive).
 
 ### Notes
 
-- Configuration is **optional** - git-turnouts works perfectly without any configuration file
-- Configuration is **centralized** - one `.config.yml` file in the git-turnouts directory manages all projects
-- Project names are detected automatically from the repository directory name
-- Project name is **always added as a subdirectory** for organization
-- **Configuration hierarchy:**
-  - **List-based settings** (`copy_files`, `protected_branches`, `hard_protected_branches`): Project-specific **combines with** global (additive)
-  - **Scalar settings** (`base_dir`, `open_with`, `auto_prune`): Project-specific **overrides** global (replacement)
-- The `.config.yml.example` file serves as a template and reference
-- **`open_with` commands** (e.g., `idea`, `code`) must be available in your system PATH - refer to your IDE's documentation for setting up command-line tools
+- **Optional**: Works perfectly without any configuration.
+- **Centralized**: Single `.config.yml` in the script directory manages all projects.
+- **Automated**: Project names are auto-detected from the repository directory.
+- **Extensible**: Add `open_with` commands that are in your system `PATH`.
 
 ## Troubleshooting
 
-### Missing Dependencies
-
-#### "gh: command not found"
-GitHub CLI is required for PR integration features.
-
-**Solution:**
-```bash
-# macOS
-brew install gh
-
-# Linux
-# See: https://cli.github.com/
-```
-
-After installation, authenticate with GitHub:
-```bash
-gh auth login
-```
-
-**Note:** You can still use git-turnouts with branch names without `gh` installed - PR integration features will not be available.
-
-#### "jq: command not found"
-jq is required for JSON processing.
-
-**Solution:**
-```bash
-# macOS
-brew install jq
-
-# Linux (Debian/Ubuntu)
-sudo apt-get install jq
-
-# Linux (RHEL/CentOS)
-sudo yum install jq
-
-# Or download from: https://jqlang.github.io/jq/download/
-```
-
-#### "Your git version doesn't support worktrees"
-Git 2.5 or newer is required.
-
-**Solution:**
-```bash
-# Check your current version
-git --version
-
-# macOS - upgrade via Homebrew
-brew upgrade git
-
-# Linux - upgrade via package manager
-sudo apt-get update && sudo apt-get upgrade git  # Debian/Ubuntu
-sudo yum update git                                # RHEL/CentOS
-```
-
-### Permission Issues
-
-#### "Permission denied" when creating worktrees
-The worktree base directory may not be writable.
-
-**Solution:**
-```bash
-# Check permissions
-ls -la ~/worktrees/
-
-# Fix permissions
-chmod u+w ~/worktrees
-
-# Or use a different directory in your config
-git-turnouts config init
-# Edit .config.yml and set base_dir to a writable location
-```
-
-#### "Cannot write to config file"
-The git-turnouts directory may not be writable.
-
-**Solution:**
-```bash
-# Find the git-turnouts directory
-which git-turnouts
-
-# Fix permissions on the directory
-chmod u+w /path/to/git-turnouts
-
-# Or create a local config by setting environment variable
-export GIT_TURNOUTS_CONFIG=~/.config/git-turnouts/config.yml
-```
-
-### Worktree Conflicts
-
-#### "Directory already exists"
-A directory with that name already exists in the worktree location.
-
-**Solution:**
-```bash
-# Check what's there
-ls -la ~/worktrees/my-project/
-
-# Remove the conflicting directory if it's not a worktree
-rm -rf ~/worktrees/my-project/branch-name
-
-# Or choose a different folder name
-git-turnouts add my-custom-name branch-name
-```
-
-#### "Branch is already checked out"
-Git prevents checking out the same branch in multiple worktrees.
-
-**Solution:**
-```bash
-# List all worktrees to find where it's checked out
-git worktree list
-
-# Remove the existing worktree first
-git-turnouts remove branch-name
-
-# Or use a different branch
-git-turnouts add new-branch-name
-```
-
-#### "Cannot remove worktree: uncommitted changes"
-Worktree has uncommitted changes that would be lost.
-
-**Solution:**
-```bash
-# Option 1: Commit the changes
-cd path/to/worktree
-git add .
-git commit -m "Save work in progress"
-
-# Option 2: Stash the changes
-git stash save "Work in progress"
-
-# Option 3: Manually delete (WARNING: loses changes)
-rm -rf path/to/worktree
-git worktree prune
-```
-
-### PR Integration Issues
-
-#### "PR #123 not found"
-The PR doesn't exist or you don't have access to it.
-
-**Solution:**
-```bash
-# Verify PR exists
-gh pr view 123
-
-# Check you're authenticated
-gh auth status
-
-# Try re-authenticating
-gh auth login
-
-# Verify you're in the correct repository
-git remote -v
-```
-
-#### "PR #123 is closed" (not merged)
-Git Turnouts shows a warning but proceeds to create the worktree.
-
-**Explanation:**
-Closed PRs that aren't merged can still have their branches available. The worktree will be created if the branch exists remotely.
-
-#### "PR #123 has been merged"
-Git Turnouts blocks worktree creation for merged PRs.
-
-**Reason:**
-Merged PR branches are typically deleted from the remote repository and no longer exist.
-
-**Solution:**
-```bash
-# Option 1: Work with the base branch where it was merged
-git-turnouts add main
-
-# Option 2: Checkout the specific commit if you need to review it
-# (Use git log to find the merge commit hash)
-
-# Option 3: If the branch still exists remotely, fetch it manually
-git fetch origin branch-name
-git-turnouts add branch-name
-```
-
-#### "No PRs found matching 'search term'"
-No open PRs match your search query.
-
-**Solution:**
-```bash
-# List all open PRs
-gh pr list
-
-# Try a different search term
-git-turnouts add "different keywords"
-
-# Use the branch name directly
-git-turnouts add branch-name
-```
-
-### Application Opening Issues
-
-#### Application doesn't open automatically
-The application may not be installed or not in the expected location.
-
-**Solution:**
-```bash
-# Verify application is installed and can be opened from terminal
-# macOS examples:
-open -a "IntelliJ IDEA"       # IDE
-open -a "Visual Studio Code"  # IDE
-open -a "iTerm"               # Terminal
-open -a "Warp"                # Terminal
-
-# Check your configuration
-git-turnouts config show
-
-# Change default application
-git-turnouts config init
-# Edit .config.yml and set global.open_with
-
-# Or specify application per command
-git-turnouts add branch-name --open code
-```
-
-#### "Application not found: idea/code/etc"
-Application opening is optimized for macOS. On Linux, ensure the command is in your PATH and accepts a directory argument.
-
-**Solution:**
-```bash
-# Create worktree without automatic opening
-git-turnouts add branch-name
-
-# Then navigate manually
-cd path/to/worktree  # Path shown in output
-
-# Or use your system's file manager/terminal
-# macOS:
-open path/to/worktree
-
-# Linux:
-xdg-open path/to/worktree
-```
-
-**Application Support:**
-- **Any CLI tool** that accepts a directory path argument (e.g., `code`, `idea`, `subl`, `vim`, `emacs`, `cursor`)
-- **macOS applications** via `open -a` command (e.g., `Warp`, `Sublime Text`)
-- **Custom wrapper scripts** for special cases (see troubleshooting)
-
-**Examples of commonly used applications:**
-- IDEs: `code` (VS Code), `idea` (IntelliJ IDEA), `subl` (Sublime), `cursor` (Cursor AI)
-- Editors: `vim`, `emacs`, `nano`
-- Terminals: Create wrapper scripts for terminal applications
-- File managers: Use `finder` on macOS or create wrappers for other platforms
-
-**Tip:** If your tool doesn't work automatically, create worktrees without the `--open` flag and navigate manually.
-
-### Configuration Issues
-
-#### "Error parsing config file"
-Your `.config.yml` file may have YAML syntax errors.
-
-**Solution:**
-```bash
-# Backup your config
-cp .config.yml .config.yml.backup
-
-# Reset to example template
-git-turnouts config init
-
-# Or manually check YAML syntax
-# Common issues:
-# - Incorrect indentation (use spaces, not tabs)
-# - Missing colons after keys
-# - Unquoted strings with special characters
-
-# View what's being read
-git-turnouts config show
-```
-
-#### Configuration not taking effect
-Make sure you're editing the right config file.
-
-**Solution:**
-```bash
-# Find where config should be
-which git-turnouts
-# Config should be in the same directory as the script
-
-# Show current effective configuration
-git-turnouts config show
-
-# Shows detected project name and paths
-```
-
-### General Issues
-
-#### "fatal: not a git repository"
-You must run git-turnouts from within a Git repository.
-
-**Solution:**
-```bash
-# Navigate to your repository first
-cd /path/to/your/repository
-
-# Verify it's a git repo
-git status
-
-# Then run git-turnouts
-git-turnouts list
-```
-
-#### Script hangs or takes a long time
-Network operations (fetching PRs, pulling branches) can be slow.
-
-**Explanation:**
-This is normal for:
-- Fetching large repositories
-- Slow network connections
-- First-time branch fetches
-
-Git Turnouts will show progress where possible. Be patient during network operations.
-
-#### Need more help?
-
-1. **Check verbose error messages** - git-turnouts provides detailed error information
-2. **Enable debug mode** (if needed):
-   ```bash
-   bash -x git-turnouts add branch-name
-   ```
-3. **Open an issue**: [GitHub Issues](https://github.com/andr3van/git-turnouts/issues)
+### Dependencies
+- **Missing `gh` or `jq`**: Install them using your package manager (`brew`, `apt`, `yum`). Run `gh auth login` for GitHub features.
+- **Git version**: Requires 2.5+. Upgrade your git client if worktrees are not supported.
+
+### Permissions
+- **"Permission denied"**: Ensure the `base_dir` and the `git-turnouts` script directory are writable.
+- **Config issues**: Use `export GIT_TURNOUTS_CONFIG=~/.config/git-turnouts/config.yml` if the default location is not writable.
+
+### Worktrees
+- **"Directory already exists"**: Remove the stale directory or use a custom name: `git-turnouts add <custom-name> <branch>`.
+- **"Branch already checked out"**: A branch can only be in one worktree. Use `git worktree list` to find it.
+- **"Uncommitted changes"**: Commit or stash changes before removing a worktree.
+
+### Application Opening
+- **IDE not opening**: Ensure the command (e.g., `code`, `idea`) is in your `PATH`.
+- **Linux GUI**: Automatic opening of GUI apps on Linux may require manual setup.
+
+For more details, run `git-turnouts config check --verbose` or open a [GitHub Issue](https://github.com/andr3van/git-turnouts/issues).
 
 ## Contributing
 
-Contributions are welcome! Whether you're fixing bugs, adding features, improving documentation, or suggesting new ideas - all contributions are appreciated.
-
-**Getting Started:**
-1. Read our [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines
-2. Fork the repository and create a feature branch
-3. Make your changes and test thoroughly
-4. Submit a Pull Request with a clear description
-
-**Areas where help is appreciated:**
-- 🎨 New IDE/application adapters
-- 🐛 Bug reports and fixes
-- 📚 Documentation and tutorials
-- ✨ New features and enhancements
-- 🌍 Platform support (Windows native, additional Unix-like systems)
-
-For questions or discussions, open an issue on GitHub.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-[MIT License](LICENSE) - see LICENSE file for details
+[MIT License](LICENSE)
 
-## Why This Tool?
+## Why Git Turnouts?
 
-Created to streamline Git worktree workflows with modern GitHub PR integration. Born from the need to work on multiple features, review PRs, and handle hotfixes without the constant context switching pain.
-
-## Acknowledgments
-
-Built for developers who work on multiple features simultaneously and need to switch tracks without losing momentum. Like a well-designed railroad junction, Git Turnouts keeps your development workflow running smoothly.
+Created to streamline context-switching. Like a railroad turnout, it guides you between tracks (branches) without the friction of stashing or losing momentum.
