@@ -11,22 +11,28 @@ VERSION="1.2.0"
 # SHARED HELPER FUNCTIONS
 # ============================================================================
 
-# Function to get PR branch by title (exact or partial match)
+# Function to get PR branch by title (prefers exact match, falls back to partial)
 get_pr_branch_by_title() {
   local search_term="$1"
   local exact_match="$2"
 
-  if [ "$exact_match" = "true" ]; then
-    # Exact match - PR title must exactly match the search term
-    gh pr list --json number,title,headRefName | \
-      jq -r --arg term "$search_term" '.[] | select(.title == $term) | .headRefName' | \
-      head -n1
-  else
-    # Partial match - PR title must contain the search term
-    gh pr list --json number,title,headRefName | \
-      jq -r --arg term "$search_term" '.[] | select(.title | contains($term)) | .headRefName' | \
-      head -n1
+  # Fetch open PRs
+  local pr_list=$(gh pr list --json number,title,headRefName 2>/dev/null)
+  if [ -z "$pr_list" ] || [ "$pr_list" = "[]" ]; then
+    return 1
   fi
+
+  # Search using jq: prefer exact match, fallback to partial if exact_match=false
+  echo "$pr_list" | jq -r --arg term "$search_term" --arg exact "$exact_match" '
+    ([.[] | select(.title == $term)] | .[0]) as $exact_res |
+    if $exact_res then
+      $exact_res
+    elif $exact == "false" then
+      ([.[] | select(.title | contains($term))] | .[0])
+    else
+      empty
+    end | .headRefName // ""
+  '
 }
 
 # Function to get PR details by PR number
@@ -1214,18 +1220,21 @@ cmd_add() {
     echo "PR Detection:"
     echo "  - PR Number: If <name> is numeric (e.g., 7113), directly checkouts that PR"
     echo "    Uses PR number as folder name and PR's branch for checkout"
-    echo "  - When only <name> is provided: checks if any PR title contains <name>"
+    echo "  - When only <name> is provided: searches open PRs for matching titles"
+    echo "    Prefers exact match first, falls back to partial match"
     echo "    If found, uses PR's branch name for both folder and branch"
-    echo "  - When both arguments provided: checks if any PR title contains [branch-name]"
+    echo "  - When both arguments provided: searches open PRs for matching titles"
+    echo "    Prefers exact match first, falls back to partial match"
     echo "    If found, uses PR's branch but keeps specified folder name"
-    echo "  - Use quotes for exact title matching: \"exact title\" vs partial matching"
+    echo "  - Use literal quotes (e.g., '\"Title\"') to force an exact match only"
     echo "  - If no matching PR is found, uses standard branch resolution"
     echo ""
     echo "Examples:"
     echo "  git-turnouts add 7113                         # Checkouts PR #7113"
     echo "  git-turnouts add feature-x                    # Creates feature-x worktree"
     echo "  git-turnouts add JIRA-123                     # Checks for PR with JIRA-123"
-    echo "  git-turnouts add \"Exact PR Title\"             # Exact title match"
+    echo "  git-turnouts add \"feature name\"               # Smart title match"
+    echo "  git-turnouts add '\"Exact PR Title\"'             # Force exact match"
     echo "  git-turnouts add folder-name branch-name      # Different names"
     echo "  git-turnouts add feature-x --open <editor>    # Opens in specified editor"
   }
@@ -1336,14 +1345,14 @@ cmd_add() {
           FOLDER_NAME="$SEARCH_TERM"
         fi
       else
-        echo "🔍 Checking for PR with title containing '$SEARCH_TERM'..."
+        echo "🔍 Checking for matching PR title '$SEARCH_TERM'..."
         PR_BRANCH=$(get_pr_branch_by_title "$SEARCH_TERM" "false")
         if [ -n "$PR_BRANCH" ]; then
-          echo "📋 Found PR with title containing '$SEARCH_TERM', using branch: $PR_BRANCH"
+          echo "📋 Found PR matching title '$SEARCH_TERM', using branch: $PR_BRANCH"
           BRANCH="$PR_BRANCH"
           FOLDER_NAME="${PR_BRANCH//\//-}"
         else
-          echo "ℹ️  No PR found with title containing '$SEARCH_TERM', using standard branch resolution"
+          echo "ℹ️  No PR found matching title '$SEARCH_TERM', using standard branch resolution"
           FOLDER_NAME="$SEARCH_TERM"
         fi
       fi
@@ -1366,13 +1375,13 @@ cmd_add() {
         BRANCH="$SEARCH_TERM"
       fi
     else
-      echo "🔍 Checking for PR with title containing '$SEARCH_TERM'..."
+      echo "🔍 Checking for matching PR title '$SEARCH_TERM'..."
       PR_BRANCH=$(get_pr_branch_by_title "$SEARCH_TERM" "false")
       if [ -n "$PR_BRANCH" ]; then
-        echo "📋 Found PR with title containing '$SEARCH_TERM', using branch: $PR_BRANCH"
+        echo "📋 Found PR matching title '$SEARCH_TERM', using branch: $PR_BRANCH"
         BRANCH="$PR_BRANCH"
       else
-        echo "ℹ️  No PR found with title containing '$SEARCH_TERM', using standard branch resolution"
+        echo "ℹ️  No PR found matching title '$SEARCH_TERM', using standard branch resolution"
       fi
     fi
   fi

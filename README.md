@@ -185,11 +185,11 @@ git-turnouts add my-folder feature-branch
 # Checkout PR by number
 git-turnouts add 7113
 
-# Search for PR by title (partial match)
+# Search for PR by title (prefers exact match, falls back to partial)
 git-turnouts add "feature name"
 
-# Search for PR by exact title
-git-turnouts add "Exact PR Title"
+# Force exact match only (using literal quotes)
+git-turnouts add '"Exact PR Title"'
 
 # Custom folder name with PR title search
 git-turnouts add my-folder "PR Title"
@@ -307,8 +307,8 @@ Worktrees are organized in a clean hierarchy:
    - Fetches latest changes from remote
 
 2. **PR Title Search**: Searches open PRs for matching titles
-   - Quoted strings = exact match
-   - Unquoted strings = partial match
+   - Prefers exact match first, falls back to partial match
+   - Use literal quotes (e.g., '"Title"') to force an exact match only
    - Uses PR's branch if found
 
 3. **Standard Branch**: Falls back to normal Git branch resolution
@@ -403,7 +403,7 @@ global:
 projects:
   - name: my-app
     base_dir: ~/custom/my-app      # Overrides global base_dir
-    copy_files:                     # Adds to global copy_files
+    copy_files:                     # Combines with global copy_files
       - .env.local                  # Combined: .editorconfig, .env.example, .nvmrc, .env.local
   - name: another-project
     base_dir: /tmp/another-project
