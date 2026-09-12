@@ -17,7 +17,7 @@ mock_gh_pr_list() {
 
   cat > "$mock_gh_dir/gh" << 'MOCK_GH_EOF'
 #!/bin/bash
-if [[ "$*" == "pr list --json number,title,headRefName" ]]; then
+if [[ "$*" == *"pr list"* ]]; then
   echo '[
     {"number": 1, "title": "Exact Match Title", "headRefName": "branch-1"},
     {"number": 2, "title": "Partial Match Title", "headRefName": "branch-2"}
@@ -101,4 +101,23 @@ MOCK_GH_EOF
   
   assert_output_contains "Detected PR number: #1"
   assert_output_contains "📋 Found PR #1.*using branch: branch-1"
+}
+
+@test "PR title search: handles empty PR list without crashing" {
+  local mock_gh_dir="$TEST_TEMP_DIR/.mock/bin"
+  mkdir -p "$mock_gh_dir"
+
+  cat > "$mock_gh_dir/gh" << 'MOCK_GH_EOF'
+#!/bin/bash
+if [[ "$*" == *"pr list"* ]]; then
+  echo "[]"
+fi
+MOCK_GH_EOF
+  chmod +x "$mock_gh_dir/gh"
+  export PATH="$mock_gh_dir:$PATH"
+
+  run "$GIT_TURNOUTS_SCRIPT" add "any-title"
+  
+  assert_success
+  assert_output_contains "No PR found matching title 'any-title', using standard branch resolution"
 }
