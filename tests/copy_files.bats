@@ -16,7 +16,7 @@ mock_gh_pr_list() {
 
   cat > "$mock_gh_dir/gh" << 'MOCK_GH_EOF'
 #!/bin/bash
-if [[ "$*" == "pr list --json number,title,headRefName" ]]; then
+if [[ "$*" == *"pr list"* ]]; then
   echo '[
     {"number": 1, "title": "feature-x", "headRefName": "feature-x"},
     {"number": 2, "title": "feature-y", "headRefName": "feature-y"}
