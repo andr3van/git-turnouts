@@ -1718,7 +1718,7 @@ handle_verify_cleanup() {
 
     # Use existing remove_worktree function
     for branch in $stale_list; do
-      remove_worktree "$branch" "$force_removal"
+      remove_worktree "$branch" "$force_removal" || true
     done
   fi
 
