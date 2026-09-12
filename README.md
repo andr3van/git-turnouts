@@ -23,7 +23,7 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
 - **Organized Workspace**: Creates worktrees in a structured hierarchy
 - **Automatic Opening**: Open worktrees in your IDE (IntelliJ IDEA, VS Code) or other applications (iTerm, Warp, Finder)
 - **Bulk Removal**: Remove multiple worktrees efficiently in a single command
-- **Protected Branches**: Automatically protects main/master branches from deletion
+- **Configurable Branch Protection**: Protects critical branches (main, master, etc.) with both soft and hard protection levels
 - **Safety Checks**: Prevents branch conflicts and duplicate worktrees
 - **Progress Tracking**: Shows detailed progress and summary statistics
 
@@ -277,9 +277,9 @@ When cleaning up stale worktrees with `verify --clean`:
 - Include protected stale branches in the "Protected (stale)" count in the summary
 
 **Hard-Protected Branches:**
-Branches like `main` and `master` (and the repository's default branch) are **hard-protected**. They can NEVER be removed by `git-turnouts`, even if the `--force` flag is used. This provides a baseline safety net for your most critical tracks.
+By default, `main`, `master`, and the repository's default branch are **hard-protected**. They can NEVER be removed by `git-turnouts`, even if the `--force` flag is used. This provides a baseline safety net for your most critical tracks.
 
-This ensures important branches like `develop` or `staging` are never accidentally removed and are always clearly identified in the output.
+You can configure additional branches for absolute protection using the `hard_protected_branches` setting. This ensures important tracks like `production` or `stable` are never accidentally removed, even with the force flag. Soft-protected branches (configured via `protected_branches`) can still be removed if you explicitly use `--force`.
 
 ## How It Works
 
@@ -318,7 +318,7 @@ Worktrees are organized in a clean hierarchy:
 ### Safety Features
 
 - Prevents checking out the same branch in multiple worktrees
-- Protects main/master branches from deletion
+- Protects critical branches from deletion (with configurable soft and hard protection)
 - Validates target directories don't exist
 - Handles merged/closed PRs appropriately
 
@@ -397,7 +397,7 @@ global:
     - .nvmrc
 
 # Project-specific settings
-# List settings (copy_files, protected_branches): ADD TO global
+# List settings (copy_files, protected_branches, hard_protected_branches): COMBINE WITH global
 # Scalar settings (base_dir, open_with, auto_prune): OVERRIDE global
 # The 'name' must match your repository's directory name exactly
 projects:
@@ -511,15 +511,20 @@ projects:
 - Most projects: `~/worktrees/my-app/branch-name`
 - my-important-project: `~/critical/my-important-project/branch-name`
 
-#### Example 3: Production Environment Protection
+#### Example 3: Branch Protection (Soft and Hard)
 
 ```yaml
 global:
-  # main and master are already protected by default
+  # main, master, and default branch are hard-protected by default
+  # Add more branches that can NEVER be deleted (even with --force)
+  hard_protected_branches:
+    - production
+    - stable
+
+  # Soft protection: branches that cannot be deleted unless --force is used
   protected_branches:
     - develop
     - staging
-    - production
     - hotfix
 ```
 
@@ -555,6 +560,11 @@ global:
     - develop
     - staging
 
+  # Branches that can NEVER be removed, even with --force
+  # Default: main, master, and default branch only
+  hard_protected_branches:
+    - production
+
 projects:
   # Project-specific settings override global settings
   - name: critical-app
@@ -563,6 +573,8 @@ projects:
     protected_branches:
       - develop
       - staging
+      - production
+    hard_protected_branches:
       - production
 ```
 
@@ -577,7 +589,7 @@ projects:
 - Project names are detected automatically from the repository directory name
 - Project name is **always added as a subdirectory** for organization
 - **Configuration hierarchy:**
-  - **List-based settings** (`copy_files`, `protected_branches`): Project-specific **adds to** global (additive)
+  - **List-based settings** (`copy_files`, `protected_branches`, `hard_protected_branches`): Project-specific **combines with** global (additive)
   - **Scalar settings** (`base_dir`, `open_with`, `auto_prune`): Project-specific **overrides** global (replacement)
 - The `.config.yml.example` file serves as a template and reference
 - **`open_with` commands** (e.g., `idea`, `code`) must be available in your system PATH - refer to your IDE's documentation for setting up command-line tools

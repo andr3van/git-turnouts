@@ -179,7 +179,7 @@ check_unpushed_commits() {
   fi
 }
 
-# Check if a branch is hard-protected (main, master, or repository default)
+# Check if a branch is hard-protected (main, master, repository default, or configured)
 # These branches can NEVER be removed, even with --force
 # Arguments: $1 = branch name
 # Returns: 0 (true) if hard-protected, 1 (false) if not
@@ -190,8 +190,18 @@ is_hard_protected_branch() {
   local default_branch
   default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
-  # Hard-protected branches: main, master, and the repository's default branch
+  # Hardcoded hard-protected branches: main, master, and the repository's default branch
   for protected in "main" "master" "$default_branch"; do
+    if [ "$branch" = "$protected" ]; then
+      return 0  # Hard-protected
+    fi
+  done
+
+  # Check configured hard-protected branches (project-specific → global → default: empty)
+  local hard_protected_branches=$(get_config "protection.hard_protected_branches" "")
+
+  # Check against configured hard-protected branches
+  for protected in $hard_protected_branches; do
     if [ "$branch" = "$protected" ]; then
       return 0  # Hard-protected
     fi
@@ -363,6 +373,8 @@ CONFIG_DEFAULTS_PROJECTS=""              # Space-separated: "project1:editor1 pr
 # Protection configuration
 CONFIG_PROTECTION_GLOBAL_BRANCHES="main master"  # Hardcoded defaults (always protected)
 CONFIG_PROTECTION_PROJECTS=""            # Space-separated: "project1:dev,staging project2:prod"
+CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES=""  # Additional branches that can NEVER be removed
+CONFIG_PROTECTION_PROJECTS_HARD=""       # Space-separated: "project1:branch1,branch2"
 
 # Remove configuration
 CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="true"   # Hardcoded default
@@ -377,6 +389,7 @@ parse_yaml_config() {
   local in_project_item=false   # Are we inside a project list item?
   local in_list=false           # Are we inside a list (copy_files, protected_branches)?
   local list_type=""            # What type of list (copy_files, protected_branches)
+  local sub_section=""          # Current sub-section (global, projects)
 
   # Temporary variables for building project entries
   local current_project_name=""
@@ -385,6 +398,7 @@ parse_yaml_config() {
   local current_auto_prune=""
   local current_copy_files=""
   local current_protected_branches=""
+  local current_hard_protected_branches=""
 
   while IFS= read -r line || [ -n "$line" ]; do
     # Skip comments and empty lines
@@ -399,6 +413,7 @@ parse_yaml_config() {
       section="${BASH_REMATCH[1]}"
       in_list=false
       in_project_item=false
+      sub_section=""
       continue
     fi
 
@@ -411,6 +426,9 @@ parse_yaml_config() {
       if [[ "$value" == ~* ]]; then
         value="${value/#\~/$HOME}"
       fi
+
+      # Reset sub-section for any new 2-space key
+      sub_section=""
 
       if [ "$section" = "global" ]; then
         # Handle global settings
@@ -432,6 +450,18 @@ parse_yaml_config() {
               ;;
           esac
         fi
+      elif [ -z "$value" ]; then
+        # Check for hierarchical sub-sections (global: or projects:)
+        if [ "$key" = "global" ] || [ "$key" = "projects" ]; then
+          in_list=true
+          list_type="$key"
+          sub_section="$key"
+          in_project_item=false
+        else
+          # Other list header (e.g., defaults:\n  some_list:)
+          in_list=true
+          list_type="$key"
+        fi
       fi
       continue
     fi
@@ -452,6 +482,7 @@ parse_yaml_config() {
         current_auto_prune=""
         current_copy_files=""
         current_protected_branches=""
+        current_hard_protected_branches=""
         in_list=false
 
         # Check if name: is on the same line as dash
@@ -464,18 +495,43 @@ parse_yaml_config() {
 
     # 4-space indent, dash: List items under global (e.g., "    - .editorconfig")
     if [[ "$line" =~ ^[[:space:]]{4}-[[:space:]]*(.*)$ ]]; then
-      local item="${BASH_REMATCH[1]}"
+      local rest="${BASH_REMATCH[1]}"
 
-      if [ "$in_list" = true ] && [ "$section" = "global" ]; then
-        # List item under global (e.g., copy_files or protected_branches)
-        case "$list_type" in
-          "copy_files")
-            CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
-            ;;
-          "protected_branches")
-            CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
-            ;;
-        esac
+      if [ "$in_list" = true ]; then
+        if [ "$section" = "global" ] || [ "$sub_section" = "global" ]; then
+          local item="$rest"
+          # List item under global (e.g., copy_files or protected_branches)
+          case "$list_type" in
+            "copy_files")
+              CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
+              ;;
+            "protected_branches")
+              CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
+              ;;
+            "hard_protected_branches")
+              CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES="$CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES $item"
+              ;;
+          esac
+        elif [ "$sub_section" = "projects" ]; then
+          # Project list item under hierarchical section
+          save_project_data
+
+          # Start new project item
+          in_project_item=true
+          current_project_name=""
+          current_base_dir=""
+          current_open_with=""
+          current_auto_prune=""
+          current_copy_files=""
+          current_protected_branches=""
+          current_hard_protected_branches=""
+          in_list=false
+
+          # Check if name: is on the same line as dash
+          if [[ "$rest" =~ ^name:[[:space:]]*(.+)$ ]]; then
+            current_project_name="${BASH_REMATCH[1]}"
+          fi
+        fi
       fi
       continue
     fi
@@ -509,11 +565,62 @@ parse_yaml_config() {
               ;;
           esac
         fi
+      elif [ "$sub_section" = "global" ]; then
+        # Global setting under hierarchical section (e.g., defaults:\n  global:\n    open_with: code)
+        if [ -z "$value" ]; then
+          in_list=true
+          list_type="$key"
+        else
+          case "$key" in
+            "base_dir")
+              CONFIG_WORKTREE_GLOBAL_BASE_DIR="$value"
+              ;;
+            "open_with")
+              CONFIG_DEFAULTS_GLOBAL_OPEN_WITH="$value"
+              ;;
+            "auto_prune")
+              CONFIG_REMOVE_GLOBAL_AUTO_PRUNE="$value"
+              ;;
+          esac
+        fi
       fi
       continue
     fi
 
-    # 6-space indent, dash: List items under project properties (e.g., "      - .editorconfig")
+    # 6-space indent, key:value: Project properties under nested projects section
+    if [[ "$line" =~ ^[[:space:]]{6}([a-z_]+):[[:space:]]*(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Expand tilde in paths
+      if [[ "$value" == ~* ]]; then
+        value="${value/#\~/$HOME}"
+      fi
+
+      if [ "$in_project_item" = true ]; then
+        if [ -z "$value" ]; then
+          # It's a list header under project (e.g., "      copy_files:")
+          in_list=true
+          list_type="$key"
+        else
+          # It's a direct value under project
+          case "$key" in
+            "base_dir")
+              current_base_dir="$value"
+              ;;
+            "open_with")
+              current_open_with="$value"
+              ;;
+            "auto_prune")
+              current_auto_prune="$value"
+              ;;
+          esac
+        fi
+      fi
+      continue
+    fi
+
+    # 6-space indent, dash: List items (under project properties or hierarchical global lists)
     if [[ "$line" =~ ^[[:space:]]{6}-[[:space:]]*(.*)$ ]]; then
       local item="${BASH_REMATCH[1]}"
 
@@ -534,6 +641,59 @@ parse_yaml_config() {
               current_protected_branches="$current_protected_branches,$item"
             fi
             ;;
+          "hard_protected_branches")
+            if [ -z "$current_hard_protected_branches" ]; then
+              current_hard_protected_branches="$item"
+            else
+              current_hard_protected_branches="$current_hard_protected_branches,$item"
+            fi
+            ;;
+        esac
+      elif [ "$in_list" = true ] && [ "$sub_section" = "global" ]; then
+        # Hierarchical global list item (e.g. protection:\n  global:\n    protected_branches:\n      - dev)
+        case "$list_type" in
+          "copy_files")
+            CONFIG_WORKTREE_GLOBAL_COPY_FILES="$CONFIG_WORKTREE_GLOBAL_COPY_FILES $item"
+            ;;
+          "protected_branches")
+            CONFIG_PROTECTION_GLOBAL_BRANCHES="$CONFIG_PROTECTION_GLOBAL_BRANCHES $item"
+            ;;
+          "hard_protected_branches")
+            CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES="$CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES $item"
+            ;;
+        esac
+      fi
+      continue
+    fi
+
+    # 8-space indent, dash: List items under nested project properties
+    if [[ "$line" =~ ^[[:space:]]{8}-[[:space:]]*(.*)$ ]]; then
+      local item="${BASH_REMATCH[1]}"
+
+      if [ "$in_project_item" = true ] && [ "$in_list" = true ]; then
+        # Add to project's list (comma-separated)
+        case "$list_type" in
+          "copy_files")
+            if [ -z "$current_copy_files" ]; then
+              current_copy_files="$item"
+            else
+              current_copy_files="$current_copy_files,$item"
+            fi
+            ;;
+          "protected_branches")
+            if [ -z "$current_protected_branches" ]; then
+              current_protected_branches="$item"
+            else
+              current_protected_branches="$current_protected_branches,$item"
+            fi
+            ;;
+          "hard_protected_branches")
+            if [ -z "$current_hard_protected_branches" ]; then
+              current_hard_protected_branches="$item"
+            else
+              current_hard_protected_branches="$current_hard_protected_branches,$item"
+            fi
+            ;;
         esac
       fi
       continue
@@ -549,6 +709,7 @@ parse_yaml_config() {
   CONFIG_WORKTREE_PROJECTS="${CONFIG_WORKTREE_PROJECTS## }"
   CONFIG_DEFAULTS_PROJECTS="${CONFIG_DEFAULTS_PROJECTS## }"
   CONFIG_PROTECTION_PROJECTS="${CONFIG_PROTECTION_PROJECTS## }"
+  CONFIG_PROTECTION_PROJECTS_HARD="${CONFIG_PROTECTION_PROJECTS_HARD## }"
   CONFIG_REMOVE_PROJECTS="${CONFIG_REMOVE_PROJECTS## }"
   CONFIG_WORKTREE_PROJECTS_COPY_FILES="${CONFIG_WORKTREE_PROJECTS_COPY_FILES## }"
 }
@@ -576,6 +737,11 @@ save_project_data() {
       CONFIG_PROTECTION_PROJECTS="$CONFIG_PROTECTION_PROJECTS ${current_project_name}:${current_protected_branches}"
     fi
 
+    # Save hard_protected_branches if present
+    if [ -n "$current_hard_protected_branches" ]; then
+      CONFIG_PROTECTION_PROJECTS_HARD="$CONFIG_PROTECTION_PROJECTS_HARD ${current_project_name}:${current_hard_protected_branches}"
+    fi
+
     # Save auto_prune if present
     if [ -n "$current_auto_prune" ]; then
       CONFIG_REMOVE_PROJECTS="$CONFIG_REMOVE_PROJECTS ${current_project_name}:${current_auto_prune}"
@@ -588,6 +754,7 @@ save_project_data() {
     current_auto_prune=""
     current_copy_files=""
     current_protected_branches=""
+    current_hard_protected_branches=""
     in_list=false
   fi
   in_project_item=false
@@ -815,6 +982,41 @@ get_config() {
       fi
 
       # 3. Return combined result (or default if somehow empty)
+      if [ -n "$result" ]; then
+        echo "$result"
+      else
+        echo "$default"
+      fi
+      ;;
+
+    # hard_protected_branches setting: project-specific ADDS TO global (additive behavior)
+    protection.hard_protected_branches)
+      local result=""
+
+      # 1. Add global hard-protected branches
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES" ]; then
+        result="$CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES"
+      fi
+
+      # 2. Add project-specific hard-protected branches (if any)
+      if [ -n "$project" ]; then
+        for entry in $CONFIG_PROTECTION_PROJECTS_HARD; do
+          local proj_name="${entry%%:*}"
+          local proj_branches="${entry#*:}"
+          if [ "$proj_name" = "$project" ]; then
+            # Convert comma-separated to space-separated and append
+            local proj_branches_space="${proj_branches//,/ }"
+            if [ -z "$result" ]; then
+              result="$proj_branches_space"
+            else
+              result="$result $proj_branches_space"
+            fi
+            break
+          fi
+        done
+      fi
+
+      # 3. Return combined result or default
       if [ -n "$result" ]; then
         echo "$result"
       else
@@ -2163,6 +2365,48 @@ cmd_config() {
       local effective_protect=$(get_config "protection.protected_branches" "main master")
       echo "    → Effective: $effective_protect"
       echo "    Note: main and master are ALWAYS protected"
+
+      echo ""
+      echo "  Hard-protected Branches (cannot be removed even with --force):"
+      if [ -n "$CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES" ]; then
+        echo "    Global:"
+        for branch in $CONFIG_PROTECTION_GLOBAL_HARD_BRANCHES; do
+          echo "      - $branch"
+        done
+      else
+        echo "    Global:  (none configured)"
+      fi
+
+      # Check if current project has hard-protection override
+      local has_project_hard_protect=false
+      for entry in $CONFIG_PROTECTION_PROJECTS_HARD; do
+        local proj_name="${entry%%:*}"
+        if [ "$proj_name" = "$current_project" ]; then
+          echo "    Project: ⭐ ACTIVE OVERRIDE"
+          local proj_branches="${entry#*:}"
+          for branch in ${proj_branches//,/ }; do
+            echo "      - $branch"
+          done
+          has_project_hard_protect=true
+          break
+        fi
+      done
+
+      if [ "$has_project_hard_protect" = false ] && [ -n "$CONFIG_PROTECTION_PROJECTS_HARD" ]; then
+        echo "    Project: (using global setting)"
+      fi
+
+      local effective_hard_protect=$(get_config "protection.hard_protected_branches" "")
+      local default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+      local all_hard="main master $default_branch $effective_hard_protect"
+      local unique_hard=""
+      for b in $all_hard; do
+        if [[ ! " $unique_hard " =~ " $b " ]]; then
+          unique_hard="$unique_hard $b"
+        fi
+      done
+      echo "    → Effective:${unique_hard}"
+      echo "    Note: main, master, and the default branch are ALWAYS hard-protected"
 
       # ========== REMOVE CONFIGURATION ==========
       echo ""
