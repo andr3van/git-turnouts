@@ -37,7 +37,7 @@ In railroad terminology, a **turnout** (also called a "switch" or "point") is a 
 
 **Platform Notes:**
 - **Core features** (worktree management, PR integration): Fully supported on macOS and Linux
-- **Automatic opening** (`--open` flag): Currently uses macOS-specific commands. On Linux, worktrees are created successfully but automatic opening in applications is not yet supported.
+- **Automatic opening** (`--open` flag): Optimized for macOS. On Linux, worktrees are created successfully and CLI tools in your PATH (like `code`) work, but automatic opening of GUI applications may require manual steps.
 
 ## Installation
 
@@ -812,14 +812,14 @@ git-turnouts config show
 
 # Change default application
 git-turnouts config init
-# Edit .config.yml and set defaults.open_with
+# Edit .config.yml and set global.open_with
 
 # Or specify application per command
 git-turnouts add branch-name --open code
 ```
 
 #### "Application not found: idea/code/etc"
-Application opening currently uses platform-specific commands.
+Application opening is optimized for macOS. On Linux, ensure the command is in your PATH and accepts a directory argument.
 
 **Solution:**
 ```bash

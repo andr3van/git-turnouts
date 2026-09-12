@@ -155,7 +155,7 @@ Closes #42
 ### Bash Style Guide
 
 **General:**
-- Use `#!/usr/bin/env bash` shebang
+- Use `#!/bin/bash` shebang
 - Target **Bash 3.2+ compatibility** (macOS default)
 - Use `set -e` for strict error handling when appropriate
 - Keep lines under **100 characters** where possible
@@ -208,7 +208,7 @@ done
 ### Configuration Parsing
 
 When working with YAML configuration:
-- Use the existing `parse_yaml()` and `load_configuration()` functions
+- Use the existing `parse_yaml_config()` and `load_configuration()` functions
 - Handle missing configuration gracefully with defaults
 - Respect the hierarchy: project-specific → global → hardcoded defaults
 
@@ -232,7 +232,7 @@ When adding features, update:
 
 ### Help Text
 
-Update the `cmd_help()` function in the script for:
+Update the `show_help()` function in the script for:
 - New commands
 - New flags or options
 - Changed behavior

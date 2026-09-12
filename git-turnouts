@@ -2539,8 +2539,6 @@ REQUIRED TOOLS:
 
 OPTIONAL TOOLS:
     gh           GitHub Pull Request integration
-    fzf          Interactive branch selection (future feature)
-    yq           Advanced YAML configuration parsing (future feature)
     shellcheck   Shell script linting for development
 
 EOF
