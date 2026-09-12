@@ -5,7 +5,7 @@
 
 set -e
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # ============================================================================
 # SHARED HELPER FUNCTIONS
@@ -2662,12 +2662,6 @@ get_tool_version() {
     bash)
       bash --version 2>/dev/null | head -1 | sed 's/.*version //' | awk '{print $1}'
       ;;
-    fzf)
-      fzf --version 2>/dev/null | awk '{print $1}'
-      ;;
-    yq)
-      yq --version 2>/dev/null | awk '{print $NF}'
-      ;;
     shellcheck)
       shellcheck --version 2>/dev/null | grep '^version:' | awk '{print $2}'
       ;;
@@ -2721,12 +2715,6 @@ get_tool_purpose() {
     gh)
       echo "GitHub Pull Request integration"
       ;;
-    fzf)
-      echo "Interactive branch selection (future feature)"
-      ;;
-    yq)
-      echo "Advanced YAML configuration parsing (future feature)"
-      ;;
     shellcheck)
       echo "Shell script linting for development"
       ;;
@@ -2754,14 +2742,6 @@ get_tool_install_instructions() {
       echo "  Install: https://cli.github.com/"
       echo "  macOS:   brew install gh"
       echo "  Linux:   See https://github.com/cli/cli/blob/trunk/docs/install_linux.md"
-      ;;
-    fzf)
-      echo "  Install: https://github.com/junegunn/fzf#installation"
-      echo "  macOS:   brew install fzf"
-      ;;
-    yq)
-      echo "  Install: https://github.com/mikefarah/yq#install"
-      echo "  macOS:   brew install yq"
       ;;
     shellcheck)
       echo "  Install: https://github.com/koalaman/shellcheck#installing"
