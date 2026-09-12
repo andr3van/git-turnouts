@@ -5,6 +5,24 @@ All notable changes to Git Turnouts will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-12
+
+### Added
+- **Configurable Hard Branch Protection**: Introduced a new protection level for critical branches that prevents deletion even with the `--force` flag; supports both hardcoded defaults (main, master) and user-defined branches.
+- **Smart PR Title Matching**: PR search now prioritizes exact matches with fallback to partial matching; support for forced exact matches using literal quotes; optimized to fetch PR data in a single API call.
+
+### Changed
+- **Documentation Overhaul**: Optimized `README.md` for better readability (65% reduction in size), updated `CONTRIBUTING.md` with modern Bash practices, and aligned configuration key ordering with implementation.
+- **Dependency Cleanup**: Removed unused `fzf` and `yq` and added `shellcheck` for development linting in optional tool checks.
+- **Configuration Hierarchy**: Standardized merging behavior where list-based settings (protected branches, copy files) are additive and scalar settings override.
+- **Verify Command Robustness**: The `verify --clean` command now handles uncommitted changes interactively and continues execution even if a single removal fails.
+
+### Fixed
+- **Premature Script Termination**: Resolved an issue where the script would exit early when declining a branch deletion in interactive mode.
+
+### Testing
+- **Massive Coverage Expansion**: Increased test suite to 143 BATS tests, covering all features and edge cases (force removal, hard protection, config hierarchy, PR search).
+
 ## [1.2.0] - 2026-09-06
 
 ### Added
@@ -152,6 +170,7 @@ local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 - File copying support for worktree setup
 - Comprehensive documentation and examples
 
+[1.3.0]: https://github.com/andr3van/git-turnouts/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/andr3van/git-turnouts/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/andr3van/git-turnouts/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/andr3van/git-turnouts/compare/v1.0.0...v1.0.1
